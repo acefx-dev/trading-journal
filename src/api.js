@@ -97,6 +97,11 @@ on('PUT', '/settings', async ({ db, request }) => {
     if (!isFinite(v) || v < lo || v > hi) throw new HttpError(400, `${k} must be between ${lo} and ${hi}`);
     ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', k, String(Math.round(v))));
   }
+  if (b.default_scope != null) {
+    const v = String(b.default_scope);
+    if (!/^(all|kind:(funded|challenge|personal|demo)|\d+)$/.test(v)) throw new HttpError(400, 'Bad default view');
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'default_scope', v));
+  }
   if (b.group_require_overlap != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'group_require_overlap', b.group_require_overlap ? '1' : '0'));
   if (ops.length) {
     ops.push(audit(db, { actor: 'user', action: 'Grouping settings changed', detail: b }));
@@ -300,9 +305,10 @@ on('GET', '/ideas/:id', async ({ db, params, sample }) => {
     all(db, 'SELECT * FROM trade_checks WHERE idea_id = ?', ideaId),
     idea.strategy_id ? all(db, "SELECT * FROM checklist_items WHERE strategy_id = ? AND kind = 'trade' AND active = 1 ORDER BY sort, id", idea.strategy_id) : [],
     all(db, 'SELECT mistake_id FROM idea_mistakes WHERE idea_id = ?', ideaId),
-    all(db, 'SELECT id, filename, content_type, size, caption, created_at FROM screenshots WHERE idea_id = ? ORDER BY id', ideaId),
+    all(db, 'SELECT id, filename, content_type, size, caption, timeframe, created_at FROM screenshots WHERE idea_id = ? ORDER BY id', ideaId),
     all(db, 'SELECT * FROM audit_log WHERE idea_id = ? ORDER BY time, id', ideaId),
   ]);
+  const links = await all(db, 'SELECT * FROM idea_links WHERE idea_id = ? ORDER BY id', ideaId);
   const agg = aggregate(idea, positions, null);
   const lead = positions.filter((p) => p.account_id === idea.account_id);
   // nearby lead positions on the same account that are NOT in this idea (for "Add position")
@@ -318,6 +324,7 @@ on('GET', '/ideas/:id', async ({ db, params, sample }) => {
     checklist: items.map((it) => ({ id: it.id, label: it.label, checked: checked.has(it.id) })),
     mistakes: mist.map((m) => m.mistake_id),
     screenshots: shots,
+    links,
     audit: log,
     grouping: {
       windowMin: settings.groupWindowMin, requireOverlap: settings.requireOverlap,
@@ -337,11 +344,6 @@ on('PUT', '/ideas/:id', async ({ db, params, request, sample }) => {
   if ('rating' in b) { const r = b.rating == null ? null : Number(b.rating); if (r != null && !(r >= 1 && r <= 5)) throw new HttpError(400, 'Rating is 1 to 5'); set.rating = r; }
   if ('emotion' in b) set.emotion = txt(b.emotion, 40);
   if ('notes' in b) set.notes = txt(b.notes, 20000);
-  if ('tv_link' in b) {
-    const link = txt(b.tv_link, 500)?.trim() || null;
-    if (link && !/^https:\/\/([a-z0-9-]+\.)*tradingview\.com\//i.test(link)) throw new HttpError(400, 'Use a https://www.tradingview.com/… link');
-    set.tv_link = link;
-  }
   if ('reviewed' in b) set.reviewed_at = b.reviewed ? Date.now() : null;
   const keys = Object.keys(set);
   if (!keys.length) return { ok: true };
@@ -455,6 +457,7 @@ async function cleanupIdea(db, ideaId, into) {
   const old = await first(db, 'SELECT * FROM ideas WHERE id = ?', ideaId);
   const ops = [
     stmt(db, 'UPDATE screenshots SET idea_id = ? WHERE idea_id = ?', into, ideaId),
+    stmt(db, 'UPDATE idea_links SET idea_id = ? WHERE idea_id = ?', into, ideaId),
     stmt(db, 'UPDATE audit_log SET idea_id = ? WHERE idea_id = ?', into, ideaId),
   ];
   if (old && old.notes && old.notes.trim()) {
@@ -481,8 +484,8 @@ on('POST', '/ideas/:id/screenshots', async ({ db, env, params, request, sample }
   if (file.size > 10 * 1024 * 1024) throw new HttpError(413, 'Image is larger than 10 MB');
   const key = `ideas/${ideaId}/${crypto.randomUUID()}.${ext}`;
   await env.SHOTS.put(key, file.stream(), { httpMetadata: { contentType: file.type } });
-  const r = await run(db, 'INSERT INTO screenshots (idea_id, r2_key, filename, content_type, size, caption, created_at) VALUES (?,?,?,?,?,?,?)',
-    ideaId, key, txt(file.name, 120), file.type, file.size, txt(form.get('caption'), 200), Date.now());
+  const r = await run(db, 'INSERT INTO screenshots (idea_id, r2_key, filename, content_type, size, caption, timeframe, created_at) VALUES (?,?,?,?,?,?,?,?)',
+    ideaId, key, txt(file.name, 120), file.type, file.size, txt(form.get('caption'), 300), cleanTf(form.get('timeframe')), Date.now());
   await audit(db, { actor: 'user', idea_id: ideaId, account_id: idea.account_id, action: 'Screenshot added', detail: txt(file.name, 120) }).run();
   return { ok: true, id: r.meta.last_row_id };
 });
@@ -493,6 +496,54 @@ on('GET', '/screenshots/:id', async ({ db, env, params }) => {
   const obj = await env.SHOTS.get(s.r2_key);
   if (!obj) throw new HttpError(404, 'File missing from storage');
   return new Response(obj.body, { headers: { 'Content-Type': s.content_type || 'application/octet-stream', 'Cache-Control': 'private, max-age=86400' } });
+});
+
+on('PUT', '/screenshots/:id', async ({ db, params, request }) => {
+  const b = await request.json();
+  const s = await first(db, 'SELECT id FROM screenshots WHERE id = ?', id(params.id));
+  if (!s) throw new HttpError(404, 'Not found');
+  await run(db, 'UPDATE screenshots SET timeframe = ?, caption = ? WHERE id = ?', cleanTf(b.timeframe), txt(b.caption, 300), s.id);
+  return { ok: true };
+});
+
+// ------------------------------------------------------------------ TradingView links (several per idea)
+
+const cleanTf = (x) => { const t = txt(x, 12)?.trim(); return t ? t.toUpperCase() : null; };
+function cleanTvUrl(u) {
+  const link = txt(u, 500)?.trim();
+  if (!link) throw new HttpError(400, 'Paste a TradingView link');
+  if (!/^https:\/\/([a-z0-9-]+\.)*tradingview\.com\//i.test(link)) throw new HttpError(400, 'Use a https://www.tradingview.com/… link');
+  return link;
+}
+
+on('POST', '/ideas/:id/links', async ({ db, params, request, sample }) => {
+  const ideaId = id(params.id);
+  const idea = await first(db, 'SELECT id, account_id FROM ideas WHERE id = ? AND is_sample = ?', ideaId, sample);
+  if (!idea) throw new HttpError(404, 'Idea not found');
+  const b = await request.json();
+  const n = await first(db, 'SELECT COUNT(*) AS n FROM idea_links WHERE idea_id = ?', ideaId);
+  if (n.n >= 30) throw new HttpError(400, 'Up to 30 links per idea');
+  const r = await run(db, 'INSERT INTO idea_links (idea_id, url, timeframe, note, created_at) VALUES (?,?,?,?,?)',
+    ideaId, cleanTvUrl(b.url), cleanTf(b.timeframe), txt(b.note, 500), Date.now());
+  await audit(db, { actor: 'user', idea_id: ideaId, account_id: idea.account_id, action: 'Chart link added', detail: cleanTf(b.timeframe) }).run();
+  return { ok: true, id: r.meta.last_row_id };
+});
+
+on('PUT', '/links/:id', async ({ db, params, request }) => {
+  const b = await request.json();
+  const l = await first(db, 'SELECT * FROM idea_links WHERE id = ?', id(params.id));
+  if (!l) throw new HttpError(404, 'Link not found');
+  await run(db, 'UPDATE idea_links SET url = ?, timeframe = ?, note = ? WHERE id = ?',
+    'url' in b ? cleanTvUrl(b.url) : l.url, 'timeframe' in b ? cleanTf(b.timeframe) : l.timeframe, 'note' in b ? txt(b.note, 500) : l.note, l.id);
+  return { ok: true };
+});
+
+on('DELETE', '/links/:id', async ({ db, params }) => {
+  const l = await first(db, 'SELECT * FROM idea_links WHERE id = ?', id(params.id));
+  if (!l) throw new HttpError(404, 'Link not found');
+  await db.batch([stmt(db, 'DELETE FROM idea_links WHERE id = ?', l.id),
+    audit(db, { actor: 'user', idea_id: l.idea_id, action: 'Chart link deleted', detail: l.timeframe })]);
+  return { ok: true };
 });
 
 on('DELETE', '/screenshots/:id', async ({ db, env, params }) => {
@@ -702,10 +753,11 @@ on('GET', '/export/ideas.csv', async ({ db, sample, q }) => {
   const scope = await resolveScope(db, sample, q);
   const ideas = (await loadIdeas(db, { sample, scope, includeOpen: false })).sort((a, b) => a.close_time - b.close_time);
   const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
-  const head = ['idea_id', 'opened_brisbane', 'closed_brisbane', 'symbol', 'direction', 'strategy', 'lead_account', 'positions', 'copies', 'net_scope', 'net_lead', 'risk_lead', 'r', 'rating', 'mistakes', 'reviewed'];
+  const head = ['idea_id', 'opened_brisbane', 'closed_brisbane', 'duration_min', 'symbol', 'direction', 'strategy', 'lead_account', 'positions', 'copies',
+    'gross_scope', 'commission_scope', 'swap_scope', 'fees_scope', 'net_scope', 'net_lead', 'risk_lead', 'r', 'rating', 'mistakes', 'reviewed'];
   const fmt = (t) => new Date(t + 10 * 3600000).toISOString().slice(0, 19).replace('T', ' ');
-  const lines = [head.join(',')].concat(ideas.map((i) => [i.id, fmt(i.open_time), fmt(i.close_time), i.symbol, i.direction, i.strategy_name, i.lead_name,
-    i.lead_positions, i.copies, i.net, i.basisNet, i.risk, i.r, i.rating, i.mistakes.length, i.reviewed ? 'yes' : 'no'].map(esc).join(',')));
+  const lines = [head.join(',')].concat(ideas.map((i) => [i.id, fmt(i.open_time), fmt(i.close_time), Math.round((i.close_time - i.open_time) / 60000),
+    i.symbol, i.direction, i.strategy_name, i.lead_name, i.lead_positions, i.copies, i.gross, i.commission, i.swap, i.fee, i.net, i.basisNet, i.risk, i.r, i.rating, i.mistakes.length, i.reviewed ? 'yes' : 'no'].map(esc).join(',')));
   return new Response(lines.join('\n'), { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="trade-ideas.csv"' } });
 });
 

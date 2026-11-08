@@ -42,6 +42,8 @@ export async function clearSample(db) {
   const ops = [
     stmt(db, 'DELETE FROM audit_log WHERE account_id IN (SELECT id FROM accounts WHERE is_sample = 1) OR idea_id IN (SELECT value FROM json_each(?))', JSON.stringify(ideas.map((i) => i.id))),
     stmt(db, 'UPDATE positions SET idea_id = NULL, master_pos = NULL WHERE account_id IN (SELECT id FROM accounts WHERE is_sample = 1)'),
+    stmt(db, 'DELETE FROM idea_links WHERE idea_id IN (SELECT id FROM ideas WHERE is_sample = 1)'),
+    stmt(db, 'DELETE FROM screenshots WHERE idea_id IN (SELECT id FROM ideas WHERE is_sample = 1)'),
     stmt(db, 'DELETE FROM ideas WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM daily_checks WHERE strategy_id IN (SELECT id FROM strategies WHERE is_sample = 1)'),
     stmt(db, 'DELETE FROM strategies WHERE is_sample = 1'),
@@ -129,6 +131,7 @@ export async function seedSample(db, now = Date.now()) {
         const pf = Math.round((exitPx - p.entry) * dir * p.lots * spec.vpp * 100) / 100;
         master.deals.push(deal(master.ticket++, p.id, p.tOpen, dir > 0 ? 0 : 1, 0, sym, p.lots, p.entry, 0, -round2(p.lots * 0.35), p.sl, p.risk, 'RGR panel', spec.digits));
         master.deals.push(deal(master.ticket++, p.id, exitUtc, dir > 0 ? 1 : 0, 1, sym, p.lots, exitPx, pf, -round2(p.lots * 0.35), 0, null, '', spec.digits));
+        if (sym === 'USDJPY') master.deals[master.deals.length - 1].swap = -round2(p.lots * 1.8); // forex: overnight swap
       }
       // copies on the two challenge accounts (2x size); #2 sometimes misses a copy (news filter)
       for (const c of copies) {
@@ -142,6 +145,7 @@ export async function seedSample(db, now = Date.now()) {
           const name = COPY_NAME[sym];
           c.deals.push(deal(c.ticket++, cid, p.tOpen + 700 + Math.floor(rand() * 900), dir > 0 ? 0 : 1, 0, name, lots, entry, 0, -round2(lots * 0.35), p.sl, round2(p.risk * 2 + Math.abs(slipPx) * lots * spec.vpp), 'TC:' + p.id, spec.digits));
           c.deals.push(deal(c.ticket++, cid, exitUtc + 400 + Math.floor(rand() * 900), dir > 0 ? 1 : 0, 1, name, lots, exitPx - slipPx * 0.5, pf, -round2(lots * 0.35), 0, null, '', spec.digits));
+          if (sym === 'USDJPY') c.deals[c.deals.length - 1].swap = -round2(lots * 1.8);
         }
       }
       reviews.push({ firstPos: mPositions[0].id, sym, R, nPos, day: d, strategy: spec.strategy });
@@ -153,7 +157,7 @@ export async function seedSample(db, now = Date.now()) {
   copies[0].deals.push(deal(copies[0].ticket++, copies[0].pos, handOpen, 1, 0, 'NAS100', 2, 21410, 0, -0.7, 21440, 60, '', 1));
   copies[0].deals.push(deal(copies[0].ticket++, copies[0].pos++, handOpen + 35 * 60000, 0, 1, 'NAS100', 2, 21395, 30, -0.7, 0, null, '', 1));
 
-  const net = (ds) => ds.reduce((a, x) => a + x.profit + x.commission, 0);
+  const net = (ds) => ds.reduce((a, x) => a + x.profit + x.commission + x.swap + x.fee, 0);
   const upload = async (acct, deals, size) => {
     // send in chunks like the connector does
     for (let k = 0; k < deals.length; k += 200) {
@@ -192,7 +196,10 @@ export async function seedSample(db, now = Date.now()) {
     });
     if (sloppy) ops.push(stmt(db, 'INSERT OR IGNORE INTO idea_mistakes (idea_id, mistake_id) VALUES (?, ?)', ideaId, mId('Entered before candle close')));
     if (rv.nPos === 3 && k % 2 === 0) ops.push(stmt(db, 'INSERT OR IGNORE INTO idea_mistakes (idea_id, mistake_id) VALUES (?, ?)', ideaId, mId('Added position late')));
-    if (rv.sym === 'JP225' && rv.R > 1) ops.push(stmt(db, 'UPDATE ideas SET tv_link = ? WHERE id = ?', 'https://www.tradingview.com/chart/', ideaId));
+    if (rv.sym === 'JP225' && rv.R > 1) {
+      ops.push(stmt(db, 'INSERT INTO idea_links (idea_id, url, timeframe, note, created_at) VALUES (?,?,?,?,?)', ideaId, 'https://www.tradingview.com/chart/', 'M5', 'Entry and adds (sample)', now));
+      ops.push(stmt(db, 'INSERT INTO idea_links (idea_id, url, timeframe, note, created_at) VALUES (?,?,?,?,?)', ideaId, 'https://www.tradingview.com/chart/', 'H1', 'Higher-timeframe context (sample)', now));
+    }
   });
   // daily preparation history (last 14 days), today left empty
   const dailyItems = await all(db, "SELECT c.* FROM checklist_items c JOIN strategies s ON s.id = c.strategy_id WHERE s.is_sample = 1 AND c.kind = 'daily'");

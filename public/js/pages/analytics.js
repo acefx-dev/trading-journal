@@ -43,7 +43,9 @@ function Body({ d, basis }) {
     <${Kpi} label="Profit factor" value=${fmt.pf(s)} sub=${`${fmt.plain(s.grossWin, 0)} / ${fmt.plain(s.grossLoss, 0)}`}/>
     <${Kpi} label="Avg win / avg loss" value=${s.avgWinR != null ? `${s.avgWinR.toFixed(2)}R / ${Math.abs(s.avgLossR || 0).toFixed(2)}R` : '—'} sub=${`Realised R:R ${s.realisedRR ?? '—'}`}/>
     <${Kpi} label="Max drawdown" value=${d.byAccount.length ? fmt.pct(-Math.max(...d.byAccount.map((a) => a.drawdownPct))) : '—'} tone="neg" sub="Worst account, closed trades in period"/>
-    <${Kpi} label="Net P&L" value=${fmt.money(s.totalNet, 0)} tone=${sgn(s.totalNet)} sub=${`${d.count} ideas`}/>
+    <${Kpi} label="Net P&L" value=${fmt.money(s.totalNet, 0)} tone=${sgn(s.totalNet)} sub=${`${d.count} ideas · gross ${fmt.money(s.gross, 0)}`}/>
+    <${Kpi} label="Costs" value=${fmt.money(s.commission + s.swap + s.fee)} tone=${sgn(s.commission + s.swap + s.fee)}
+      sub=${`Commission ${fmt.money(s.commission)} · swap ${fmt.money(s.swap)} · fees ${fmt.money(s.fee)}`}/>
   </section>
   <div class="row">
     <section class="card stack" style="flex:3 1 560px"><h2 class="h2">Cumulative ${basis === 'r' ? 'R (lead account)' : 'P&L (scope)'}</h2>

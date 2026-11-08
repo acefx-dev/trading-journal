@@ -41,6 +41,10 @@ export function summary(ideas) {
     avgWinR: avgWinR != null ? round(avgWinR, 2) : null,
     avgLossR: avgLossR != null ? round(avgLossR, 2) : null,
     realisedRR: avgWinR != null && avgLossR ? round(avgWinR / Math.abs(avgLossR), 2) : null,
+    commission: round(ideas.reduce((a, i) => a + (i.commission || 0), 0), 2),
+    swap: round(ideas.reduce((a, i) => a + (i.swap || 0), 0), 2),
+    fee: round(ideas.reduce((a, i) => a + (i.fee || 0), 0), 2),
+    gross: round(ideas.reduce((a, i) => a + (i.gross ?? i.net), 0), 2),
     best: ideas.length ? round(Math.max(...ideas.map((i) => i.net)), 2) : null,
     worst: ideas.length ? round(Math.min(...ideas.map((i) => i.net)), 2) : null,
   };

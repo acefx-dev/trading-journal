@@ -14,8 +14,10 @@ export async function resolveScope(db, sample, q) {
     WHERE a.is_sample = ? ORDER BY a.id`, sample);
   let list = accounts.filter((a) => a.status === 'active' || q.archived === '1');
   if (q.firm && q.firm !== 'all') list = list.filter((a) => String(a.firm_id) === String(q.firm));
-  if (q.acct && q.acct !== 'all') list = list.filter((a) => String(a.id) === String(q.acct));
-  const all_ = (!q.firm || q.firm === 'all') && (!q.acct || q.acct === 'all');
+  const acct = q.acct || 'all';
+  if (acct.startsWith('kind:')) list = list.filter((a) => a.kind === acct.slice(5));     // e.g. all funded accounts
+  else if (acct !== 'all') list = list.filter((a) => String(a.id) === String(acct));
+  const all_ = (!q.firm || q.firm === 'all') && acct === 'all';
   return { ids: new Set(list.map((a) => a.id)), accounts, scoped: list, isAll: all_ };
 }
 
@@ -36,13 +38,14 @@ export async function loadIdeas(db, { sample, scope, from = 0, to = 8.64e15, inc
   const ids = [...new Set(positions.map((p) => p.idea_id))];
   if (!ids.length) return [];
   const idsJson = JSON.stringify(ids);
-  const [ideas, checks, items, mist, shots] = await Promise.all([
+  const [ideas, checks, items, mist, shots, links] = await Promise.all([
     all(db, `SELECT i.*, s.name AS strategy_name, a.name AS lead_name FROM ideas i LEFT JOIN strategies s ON s.id = i.strategy_id
       JOIN accounts a ON a.id = i.account_id WHERE i.id IN (SELECT value FROM json_each(?))`, idsJson),
     all(db, 'SELECT idea_id, item_id, checked FROM trade_checks WHERE idea_id IN (SELECT value FROM json_each(?))', idsJson),
     all(db, "SELECT id, strategy_id FROM checklist_items WHERE kind = 'trade' AND active = 1"),
     all(db, 'SELECT idea_id, mistake_id FROM idea_mistakes WHERE idea_id IN (SELECT value FROM json_each(?))', idsJson),
     all(db, 'SELECT idea_id, COUNT(*) AS n FROM screenshots WHERE idea_id IN (SELECT value FROM json_each(?)) GROUP BY idea_id', idsJson),
+    all(db, 'SELECT idea_id, COUNT(*) AS n FROM idea_links WHERE idea_id IN (SELECT value FROM json_each(?)) GROUP BY idea_id', idsJson),
   ]);
   const itemsByStrat = {};
   for (const it of items) (itemsByStrat[it.strategy_id] ||= new Set()).add(it.id);
@@ -51,6 +54,7 @@ export async function loadIdeas(db, { sample, scope, from = 0, to = 8.64e15, inc
   const mistByIdea = {};
   for (const m of mist) (mistByIdea[m.idea_id] ||= []).push(m.mistake_id);
   const shotsByIdea = Object.fromEntries(shots.map((s) => [s.idea_id, s.n]));
+  const linksByIdea = Object.fromEntries(links.map((s) => [s.idea_id, s.n]));
   const posByIdea = {};
   for (const p of positions) (posByIdea[p.idea_id] ||= []).push(p);
 
@@ -66,8 +70,8 @@ export async function loadIdeas(db, { sample, scope, from = 0, to = 8.64e15, inc
     out.push({
       id: idea.id, symbol: idea.symbol, direction: idea.direction, lead_account_id: idea.account_id, lead_name: idea.lead_name,
       strategy_id: idea.strategy_id, strategy_name: idea.strategy_name, rating: idea.rating, emotion: idea.emotion,
-      reviewed: !!idea.reviewed_at, has_notes: !!(idea.notes && idea.notes.trim()), tv_link: idea.tv_link,
-      screenshots: shotsByIdea[idea.id] || 0,
+      reviewed: !!idea.reviewed_at, has_notes: !!(idea.notes && idea.notes.trim()),
+      screenshots: shotsByIdea[idea.id] || 0, links: linksByIdea[idea.id] || 0,
       checklistTotal: stratItems.size, checklistDone: done, mistakes: mistByIdea[idea.id] || [],
       ...agg,
     });
@@ -85,14 +89,19 @@ export function aggregate(idea, ps, scope) {
 
   const byAcct = new Map();
   for (const p of ps) {
-    if (!byAcct.has(p.account_id)) byAcct.set(p.account_id, { account_id: p.account_id, name: p.account_name, role: p.account_role, size: p.account_size, positions: 0, volume: 0, net: 0, risk: 0, riskKnown: true, floating: 0, lead: p.account_id === idea.account_id });
+    if (!byAcct.has(p.account_id)) byAcct.set(p.account_id, { account_id: p.account_id, name: p.account_name, role: p.account_role, size: p.account_size, positions: 0, volume: 0, net: 0, risk: 0, riskKnown: true, floating: 0, lead: p.account_id === idea.account_id,
+      gross: 0, commission: 0, swap: 0, fee: 0 });
     const a = byAcct.get(p.account_id);
     a.positions++; a.volume += p.volume; a.net += netOf(p);
+    // gross = trading result before costs (open positions: realised so far + floating)
+    a.gross += (p.profit || 0) + (p.status === 'open' ? (p.floating || 0) : 0);
+    a.commission += p.commission || 0; a.swap += p.swap || 0; a.fee += p.fee || 0;
     if (p.risk > 0) a.risk += p.risk; else a.riskKnown = false;
     if (p.status === 'open') a.floating += p.floating || 0;
   }
   const accounts = [...byAcct.values()].map((a) => ({
-    ...a, volume: round(a.volume, 2), net: round(a.net, 2), risk: a.riskKnown ? round(a.risk, 2) : null,
+    ...a, volume: round(a.volume, 2), net: round(a.net, 2), gross: round(a.gross, 2), commission: round(a.commission, 2),
+    swap: round(a.swap, 2), fee: round(a.fee, 2), costs: round(a.commission + a.swap + a.fee, 2), risk: a.riskKnown ? round(a.risk, 2) : null,
     r: a.riskKnown && a.risk > 0 ? round(a.net / a.risk, 2) : null, floating: round(a.floating, 2),
   })).sort((x, y) => (y.lead - x.lead) || x.account_id - y.account_id);
 
@@ -100,10 +109,12 @@ export function aggregate(idea, ps, scope) {
   if (!inScope.length) return null;
   const basis = inScope.find((a) => a.lead) || inScope[0];
   const net = round(inScope.reduce((s, a) => s + a.net, 0), 2);
+  const sum = (k) => round(inScope.reduce((s, a) => s + a[k], 0), 2);
   return {
     open_time, close_time, status, accounts,
     lead_positions: lead.length, copies: ps.length - lead.length,
-    net, basisNet: basis.net, basis_account_id: basis.account_id, risk: basis.risk, r: basis.r,
+    net, basisNet: basis.net,
+    gross: sum('gross'), commission: sum('commission'), swap: sum('swap'), fee: sum('fee'), costs: sum('costs'), basis_account_id: basis.account_id, risk: basis.risk, r: basis.r,
     floating: round(inScope.reduce((s, a) => s + a.floating, 0), 2),
   };
 }

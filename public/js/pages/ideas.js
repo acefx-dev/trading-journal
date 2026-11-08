@@ -37,8 +37,10 @@ export function Ideas() {
         <${Kpi} label="Net P&L (scope)" value=${fmt.money(d.summary.totalNet)} tone=${sgn(d.summary.totalNet)}/>
         <${Kpi} label="Win rate" value=${fmt.rate(d.summary.winRate)}/>
         <${Kpi} label="Expectancy" value=${fmt.r(d.summary.expectancyR)} tone=${sgn(d.summary.expectancyR)} sub=${`${d.summary.rCount} with a known risk`}/>
+        <${Kpi} label="Costs (scope)" value=${fmt.money(d.summary.commission + d.summary.swap + d.summary.fee)} tone=${sgn(d.summary.commission + d.summary.swap + d.summary.fee)}
+          sub=${`Commission ${fmt.money(d.summary.commission)} · swap ${fmt.money(d.summary.swap)} · fees ${fmt.money(d.summary.fee)}`}/>
       </section>
-      <section class="card flush">${d.items.length ? html`<${IdeaTable} ideas=${d.items}/>` : html`<div class="empty">No ideas match these filters.</div>`}
+      <section class="card flush">${d.items.length ? html`<${IdeaTable} ideas=${d.items} costs/>` : html`<div class="empty">No ideas match these filters.</div>`}
         ${d.total > d.items.length && html`<div class="sub" style="padding:12px">Showing the latest ${d.items.length} of ${d.total}. Narrow the period to see older ones.</div>`}</section>`}<//>`;
 }
 
@@ -72,6 +74,8 @@ function Detail({ d, reload }) {
       <div><div class="lbl">${i.lead_name}</div><div class="kv"><${Money} v=${leadAcc.net}/></div></div>
       <div><div class="lbl">R (on ${i.lead_name})</div><div class="kv"><${R} v=${leadAcc.r}/></div></div>
       <div><div class="lbl">Risk at initial S/L</div><div class="kv num">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div></div>
+      <div><div class="lbl">Costs${i.accounts.length > 1 ? ' (all accounts)' : ''}</div><div class=${cls('kv num', sgn(i.costs))}>${fmt.money(i.costs)}</div>
+        <div class="sub num">Gross ${fmt.money(i.gross)} · comm. ${fmt.money(i.commission)} · swap ${fmt.money(i.swap)} · fees ${fmt.money(i.fee)}</div></div>
     </div>
   </header>
   ${leadAcc.risk == null && i.status === 'closed' && html`<div class="warn">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
@@ -97,7 +101,7 @@ function Positions({ d, reload }) {
   const act = async (url, msg) => { try { await api(url, { method: 'POST' }); toast(msg); reload(); } catch (e) { toast(e.message, true); } };
   return html`<section class="card flush">
     <div class="card-head"><div><h2 class="h2">Positions</h2><div class="sub" style="margin-top:4px">Original MT5 position IDs. Prices in each broker's own symbol.</div></div></div>
-    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th>Position</th><th>Opened</th><th class="r">Lots</th><th class="r">Entry</th><th class="r">Initial S/L</th><th class="r">Exit</th><th>Closed</th><th class="r">P&L</th><th class="r">R</th><th><span class="sr">Actions</span></th></tr></thead>
+    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th>Position</th><th>Opened</th><th class="r">Lots</th><th class="r">Entry</th><th class="r">Initial S/L</th><th class="r">Exit</th><th>Closed</th><th class="r">Gross</th><th class="r">Comm.</th><th class="r">Swap</th><th class="r">Fees</th><th class="r">Net P&L</th><th class="r">R</th><th><span class="sr">Actions</span></th></tr></thead>
     <tbody>${Object.values(byAcct).map((ps) => ps.map((p, k) => html`<tr>
       <td>${k === 0 ? html`<b>${p.account_name}</b>${p.account_id === i.account_id ? html` <span class="chip b">Lead</span>` : ''}` : ''}</td>
       <td class="num">#${p.position_id}${p.master_position_id && html`<div class="sub" title=${p.copy_link === 'comment' ? 'Linked by the copier comment' : p.copy_link === 'match' ? 'Linked by symbol, side and time' : 'Linked by hand'}>copy of #${p.master_position_id}</div>`}</td>
@@ -107,6 +111,10 @@ function Positions({ d, reload }) {
       <td class="num r">${p.initial_sl ? fmt.num(p.initial_sl, 5) : html`<span class="chip r">none</span>`}</td>
       <td class="num r">${p.close_price != null ? fmt.num(p.close_price, 5) : '—'}</td>
       <td class="num">${p.status === 'open' ? html`<span class="chip b">open</span>` : fmt.timeS(p.close_time)}</td>
+      <td class="r"><${Money} v=${(p.profit || 0) + (p.status === 'open' ? (p.floating || 0) : 0)}/></td>
+      <td class=${cls('num r', p.commission ? sgn(p.commission) : 'mut')}>${fmt.money(p.commission || 0)}</td>
+      <td class=${cls('num r', p.swap ? sgn(p.swap) : 'mut')}>${fmt.money(p.swap || 0)}</td>
+      <td class=${cls('num r', p.fee ? sgn(p.fee) : 'mut')}>${fmt.money(p.fee || 0)}</td>
       <td class="r">${p.status === 'open' ? html`<${Money} v=${p.net}/><div class="sub">floating</div>` : html`<${Money} v=${p.net}/>`}</td>
       <td class="r"><${R} v=${p.r}/></td>
       <td>${p.account_id === i.account_id
@@ -119,15 +127,17 @@ function Executions({ i }) {
   if (i.accounts.length < 2) return null;
   return html`<section class="card flush">
     <div class="card-head"><div><h2 class="h2">Master idea vs account executions</h2><div class="sub" style="margin-top:4px">Each account's own deals. Totals add up to the combined P&L.</div></div></div>
-    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th class="r">Positions</th><th class="r">Lots</th><th class="r">Risk</th><th class="r">P&L</th><th class="r">R</th><th class="r">vs lead</th></tr></thead>
+    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th class="r">Positions</th><th class="r">Lots</th><th class="r">Risk</th><th class="r">Gross</th><th class="r" title="Commission + swap + fees">Costs</th><th class="r">Net P&L</th><th class="r">R</th><th class="r">vs lead</th></tr></thead>
     <tbody>${i.accounts.map((a) => {
       const lead = i.accounts.find((x) => x.lead);
       const diff = lead && a !== lead && a.r != null && lead.r != null ? a.r - lead.r : null;
       return html`<tr><td style="font-weight:500">${a.name}${a.lead ? ' (lead)' : ''}</td><td class="num r">${a.positions}</td><td class="num r">${fmt.num(a.volume)}</td>
-        <td class="num r">${a.risk != null ? fmt.plain(a.risk) : '—'}</td><td class="r"><${Money} v=${a.net}/></td><td class="r"><${R} v=${a.r}/></td>
+        <td class="num r">${a.risk != null ? fmt.plain(a.risk) : '—'}</td><td class="r"><${Money} v=${a.gross}/></td>
+        <td class=${cls('num r', a.costs ? sgn(a.costs) : 'mut')} title=${`Commission ${fmt.money(a.commission)}, swap ${fmt.money(a.swap)}, fees ${fmt.money(a.fee)}`}>${fmt.money(a.costs)}</td><td class="r"><${Money} v=${a.net}/></td><td class="r"><${R} v=${a.r}/></td>
         <td class=${cls('r num', diff != null && Math.abs(diff) >= 0.05 ? 'neg' : 'mut')}>${diff == null ? '—' : (diff >= 0 ? '+' : '−') + Math.abs(diff).toFixed(2) + 'R'}</td></tr>`;
     })}</tbody>
-    <tfoot><tr><td style="font-weight:600;padding:12px">Combined</td><td></td><td></td><td></td><td class="r" style="padding:12px"><${Money} v=${i.net}/></td><td></td><td></td></tr></tfoot></table></div></section>`;
+    <tfoot><tr><td style="font-weight:600;padding:12px">Combined</td><td></td><td></td><td></td><td class="r" style="padding:12px"><${Money} v=${i.gross}/></td>
+      <td class="r num" style="padding:12px">${fmt.money(i.costs)}</td><td class="r" style="padding:12px"><${Money} v=${i.net}/></td><td></td><td></td></tr></tfoot></table></div></section>`;
 }
 
 function Grouping({ d, reload }) {
@@ -212,12 +222,26 @@ function Review({ d, reload }) {
   </section>`;
 }
 
+const TFS = ['M1', 'M3', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN'];
+
+/** TradingView snapshot links (tradingview.com/x/ID/) have a public image we can show as a preview. */
+function tvPreview(url) {
+  const m = /tradingview\.com\/x\/([A-Za-z0-9]+)/.exec(url || '');
+  return m ? `https://s3.tradingview.com/snapshots/${m[1][0].toLowerCase()}/${m[1]}.png` : null;
+}
+
+function TfSelect({ id, value, onChange }) {
+  const custom = value && !TFS.includes(value);
+  return html`<select id=${id} class="inp" value=${value || ''} onChange=${(e) => onChange(e.target.value)}>
+    <option value="">Timeframe…</option>${TFS.map((t) => html`<option value=${t}>${t}</option>`)}${custom && html`<option value=${value}>${value}</option>`}</select>`;
+}
+
 function Chart({ d, reload }) {
   const i = d.idea;
-  const [link, setLink] = useState(i.tv_link || '');
   const [over, setOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [big, setBig] = useState(null);
+  const [tfUpload, setTfUpload] = useState('');
   const fileRef = useRef();
   const upload = async (files) => {
     const list = [...files].filter((f) => f.type.startsWith('image/'));
@@ -225,34 +249,84 @@ function Chart({ d, reload }) {
     setBusy(true);
     for (const f of list) {
       const fd = new FormData(); fd.append('file', f, f.name || 'screenshot.png');
+      if (tfUpload) fd.append('timeframe', tfUpload);
       try { await api(`/ideas/${i.id}/screenshots`, { method: 'POST', body: fd }); } catch (e) { toast(e.message, true); }
     }
     setBusy(false); toast('Screenshot added'); reload();
   };
   useEffect(() => {
-    const onPaste = (e) => { if (e.clipboardData && e.clipboardData.files.length && !(e.target instanceof HTMLTextAreaElement)) upload(e.clipboardData.files); };
+    const onPaste = (e) => { if (e.clipboardData && e.clipboardData.files.length && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLInputElement)) upload(e.clipboardData.files); };
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
-  }, [i.id]);
-  const saveLink = async () => {
-    if ((i.tv_link || '') === link.trim()) return;
-    try { await api('/ideas/' + i.id, { method: 'PUT', body: { tv_link: link.trim() } }); toast('Chart link saved'); reload(); } catch (e) { toast(e.message, true); }
-  };
+  }, [i.id, tfUpload]);
   const sample = store.mode === 'sample';
   return html`<section class="card stack">
-    <h2 class="h2">Chart</h2>
-    <div class="field"><label class="lbl" for="tv">TradingView chart link</label>
-      <div class="hstack" style="flex-wrap:nowrap"><input id="tv" class="inp" value=${link} placeholder="https://www.tradingview.com/x/…" onInput=${(e) => setLink(e.target.value)} onBlur=${saveLink} onKeyDown=${(e) => e.key === 'Enter' && saveLink()}/>
-        ${i.tv_link && html`<a class="btn" href=${i.tv_link} target="_blank" rel="noopener noreferrer" aria-label="Open chart"><${Icon} name="ext" size=${16}/></a>`}</div>
-      <div class="sub">In TradingView: camera icon → “Copy link to the chart image”, then paste here.</div></div>
-    ${d.screenshots.length > 0 && html`<div class="shots">${d.screenshots.map((sh) => html`<div class="shot">
-      <img src=${'/api/screenshots/' + sh.id} alt=${sh.filename || 'Screenshot'} loading="lazy" onClick=${() => setBig(sh.id)}/>
-      <button class="btn sm" aria-label="Delete screenshot" onClick=${async () => { if (!confirm('Delete this screenshot?')) return; try { await api('/screenshots/' + sh.id, { method: 'DELETE' }); reload(); } catch (e) { toast(e.message, true); } }}><${Icon} name="trash" size=${14}/></button></div>`)}</div>`}
-    ${sample ? html`<div class="sub">Screenshots are turned off for sample data.</div>` : html`
-    <div class=${cls('drop', over && 'over')} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)}
-      onDrop=${(e) => { e.preventDefault(); setOver(false); upload(e.dataTransfer.files); }}>
-      ${busy ? 'Uploading…' : html`Drop chart screenshots here, paste one (Ctrl+V), or <button class="btn sm" onClick=${() => fileRef.current.click()}>choose files</button>`}
-      <input ref=${fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange=${(e) => upload(e.target.files)}/></div>`}
+    <h2 class="h2">Charts</h2>
+    <${Links} d=${d} reload=${reload}/>
+    <div class="stack" style="gap:10px;border-top:1px solid var(--line2);padding-top:14px">
+      <span class="lbl">Screenshots</span>
+      ${d.screenshots.length > 0 && html`<div class="shots">${d.screenshots.map((sh) => html`<${Shot} sh=${sh} onOpen=${() => setBig(sh.id)} reload=${reload}/>`)}</div>`}
+      ${sample ? html`<div class="sub">Screenshots are turned off for sample data.</div>` : html`
+      <div class="hstack"><label class="lbl" for="tfu">Timeframe for new uploads</label><${TfSelect} id="tfu" value=${tfUpload} onChange=${setTfUpload}/></div>
+      <div class=${cls('drop', over && 'over')} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)}
+        onDrop=${(e) => { e.preventDefault(); setOver(false); upload(e.dataTransfer.files); }}>
+        ${busy ? 'Uploading…' : html`Drop chart screenshots here, paste one (Ctrl+V), or <button class="btn sm" onClick=${() => fileRef.current.click()}>choose files</button>`}
+        <input ref=${fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange=${(e) => upload(e.target.files)}/></div>`}
+    </div>
     ${big && html`<div class="lightbox" onClick=${() => setBig(null)}><img src=${'/api/screenshots/' + big} alt="Screenshot"/></div>`}
   </section>`;
+}
+
+function Shot({ sh, onOpen, reload }) {
+  const [tf, setTf] = useState(sh.timeframe || '');
+  const [cap, setCap] = useState(sh.caption || '');
+  const save = async (patch) => { try { await api('/screenshots/' + sh.id, { method: 'PUT', body: { timeframe: tf, caption: cap, ...patch } }); } catch (e) { toast(e.message, true); } };
+  return html`<div class="stack" style="gap:6px">
+    <div class="shot"><img src=${'/api/screenshots/' + sh.id} alt=${(sh.timeframe ? sh.timeframe + ' ' : '') + (sh.caption || sh.filename || 'Screenshot')} loading="lazy" onClick=${onOpen}/>
+      ${sh.timeframe && html`<span class="chip b" style="position:absolute;left:6px;top:6px">${sh.timeframe}</span>`}
+      <button class="btn sm" aria-label="Delete screenshot" onClick=${async () => { if (!confirm('Delete this screenshot?')) return; try { await api('/screenshots/' + sh.id, { method: 'DELETE' }); reload(); } catch (e) { toast(e.message, true); } }}><${Icon} name="trash" size=${14}/></button></div>
+    <div class="hstack" style="flex-wrap:nowrap;gap:6px"><label class="sr" for=${'stf' + sh.id}>Timeframe</label>
+      <${TfSelect} id=${'stf' + sh.id} value=${tf} onChange=${(v) => { setTf(v); save({ timeframe: v }); }}/>
+      <label class="sr" for=${'scap' + sh.id}>Note</label><input id=${'scap' + sh.id} class="inp" placeholder="Note" value=${cap} onInput=${(e) => setCap(e.target.value)} onBlur=${() => cap !== (sh.caption || '') && save({ caption: cap })}/></div>
+  </div>`;
+}
+
+function Links({ d, reload }) {
+  const i = d.idea;
+  const blank = { url: '', timeframe: '', note: '' };
+  const [n, setN] = useState(blank);
+  const [edit, setEdit] = useState(null);
+  const add = async (e) => {
+    e.preventDefault();
+    try { await api(`/ideas/${i.id}/links`, { method: 'POST', body: n }); setN(blank); toast('Chart link added'); reload(); } catch (err) { toast(err.message, true); }
+  };
+  const saveEdit = async (e) => {
+    e.preventDefault();
+    try { await api('/links/' + edit.id, { method: 'PUT', body: edit }); setEdit(null); reload(); } catch (err) { toast(err.message, true); }
+  };
+  const del = async (l) => { if (!confirm('Delete this link?')) return; try { await api('/links/' + l.id, { method: 'DELETE' }); reload(); } catch (err) { toast(err.message, true); } };
+  return html`<div class="stack" style="gap:10px">
+    <span class="lbl">TradingView links</span>
+    ${d.links.map((l) => edit && edit.id === l.id ? html`<form class="well stack" style="gap:8px" onSubmit=${saveEdit}>
+        <input class="inp" aria-label="Link" value=${edit.url} onInput=${(e) => setEdit({ ...edit, url: e.target.value })}/>
+        <div class="hstack" style="flex-wrap:nowrap"><${TfSelect} id=${'etf' + l.id} value=${edit.timeframe} onChange=${(v) => setEdit({ ...edit, timeframe: v })}/>
+          <input class="inp" aria-label="Note" placeholder="Note" value=${edit.note || ''} onInput=${(e) => setEdit({ ...edit, note: e.target.value })}/></div>
+        <div class="hstack"><button class="btn sm pri" type="submit">Save</button><button class="btn sm" type="button" onClick=${() => setEdit(null)}>Cancel</button></div></form>`
+      : html`<div class="well hstack" style="flex-wrap:nowrap;align-items:flex-start;gap:12px">
+        ${tvPreview(l.url) && html`<a href=${l.url} target="_blank" rel="noopener noreferrer" style="flex:0 0 120px"><img src=${tvPreview(l.url)} alt="Chart preview" loading="lazy" style="width:120px;border-radius:8px;display:block" onError=${(e) => { e.target.style.display = 'none'; }}/></a>`}
+        <div class="stack" style="gap:4px;flex:1;min-width:0">
+          <div class="hstack" style="gap:8px">${l.timeframe ? html`<span class="chip b">${l.timeframe}</span>` : html`<span class="chip">No timeframe</span>`}
+            <a href=${l.url} target="_blank" rel="noopener noreferrer" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">${l.url.replace(/^https:\/\/(www\.)?/, '')}</a></div>
+          ${l.note && html`<span class="sub" style="font-size:13px;color:var(--text2)">${l.note}</span>`}</div>
+        <div class="hstack" style="flex-wrap:nowrap"><button class="btn sm ghost" aria-label="Edit link" onClick=${() => setEdit({ id: l.id, url: l.url, timeframe: l.timeframe || '', note: l.note || '' })}><${Icon} name="edit" size=${14}/></button>
+          <button class="btn sm ghost" aria-label="Delete link" onClick=${() => del(l)}><${Icon} name="trash" size=${14}/></button></div></div>`)}
+    <form class="stack" style="gap:8px" onSubmit=${add}>
+      <label class="sr" for="tvn">TradingView link</label>
+      <input id="tvn" class="inp" placeholder="https://www.tradingview.com/x/…" value=${n.url} onInput=${(e) => setN({ ...n, url: e.target.value })}/>
+      <div class="hstack" style="flex-wrap:nowrap"><${TfSelect} id="tvtf" value=${n.timeframe} onChange=${(v) => setN({ ...n, timeframe: v })}/>
+        <label class="sr" for="tvnote">Note</label><input id="tvnote" class="inp" placeholder="Note (e.g. entry, context)" value=${n.note} onInput=${(e) => setN({ ...n, note: e.target.value })}/>
+        <button class="btn" type="submit" disabled=${!n.url.trim()}>Add</button></div>
+      <div class="sub">In TradingView: camera icon → “Copy link to the chart image”. Snapshot links show a preview.</div>
+    </form>
+  </div>`;
 }

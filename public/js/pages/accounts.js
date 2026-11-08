@@ -70,27 +70,31 @@ function AccountRow({ a, all, onEdit, onConnect }) {
 }
 
 function FirmForm({ f, onClose }) {
-  const [v, setV] = useState({ name: f.name || '', website: f.website || '', notes: f.notes || '' });
+  const init = { name: f.name || '', website: f.website || '', notes: f.notes || '' };
+  const [v, setV] = useState(init);
+  const dirty = JSON.stringify(v) !== JSON.stringify(init);
   const save = async (e) => {
     e.preventDefault();
     try { await api(f.id ? '/firms/' + f.id : '/firms', { method: f.id ? 'PUT' : 'POST', body: v }); await reloadBoot(); onClose(); } catch (err) { toast(err.message, true); }
   };
   const del = async () => { if (!confirm('Delete this firm?')) return; try { await api('/firms/' + f.id, { method: 'DELETE' }); await reloadBoot(); onClose(); } catch (err) { toast(err.message, true); } };
-  return html`<${Modal} title=${f.id ? 'Edit prop firm' : 'Add prop firm'} onClose=${onClose}><form class="stack" onSubmit=${save}>
+  return html`<${Modal} title=${f.id ? 'Edit prop firm' : 'Add prop firm'} onClose=${onClose} dirty=${dirty}><form class="stack" onSubmit=${save}>
     <div class="field"><label class="lbl" for="fn">Name</label><input id="fn" class="inp" required value=${v.name} onInput=${(e) => setV({ ...v, name: e.target.value })}/></div>
     <div class="field"><label class="lbl" for="fw">Website</label><input id="fw" class="inp" type="url" value=${v.website} onInput=${(e) => setV({ ...v, website: e.target.value })} placeholder="https://"/></div>
     <div class="field"><label class="lbl" for="fno">Notes (rules, payout dates…)</label><textarea id="fno" class="inp" value=${v.notes} onInput=${(e) => setV({ ...v, notes: e.target.value })}></textarea></div>
-    <div class="hstack"><button class="btn pri" type="submit">Save</button><button class="btn" type="button" onClick=${onClose}>Cancel</button>${f.id && html`<button class="btn danger" type="button" onClick=${del}>Delete</button>`}</div>
+    <div class="hstack"><button class="btn pri" type="submit">Save</button><button class="btn" type="button" onClick=${() => (!dirty || confirm('Discard your changes?')) && onClose()}>Cancel</button>${f.id && html`<button class="btn danger" type="button" onClick=${del}>Delete</button>`}</div>
   </form><//>`;
 }
 
 function AccountForm({ a, all, firms, onClose }) {
   const isNew = !a.id;
-  const [v, setV] = useState({
+  const [init] = useState(() => ({
     name: a.name || '', login: a.login || '', firm_id: a.firm_id || '', kind: a.kind || 'challenge', phase: a.phase || '', size: a.size ?? '',
     role: a.role || 'standalone', master_account_id: a.master_account_id || '', daily_loss_pct: a.daily_loss_pct ?? 5, max_loss_pct: a.max_loss_pct ?? 10,
     max_loss_type: a.max_loss_type || 'static', profit_target_pct: a.profit_target_pct ?? '', tz_mode: a.tz_mode || 'auto', status: a.status || 'active',
-  });
+  }));
+  const [v, setV] = useState(init);
+  const dirty = JSON.stringify(v) !== JSON.stringify(init);
   const set = (k) => (e) => setV({ ...v, [k]: e.target.value });
   const masters = all.filter((x) => x.id !== a.id && x.role !== 'copy' && x.status === 'active');
   const save = async (e) => {
@@ -103,7 +107,7 @@ function AccountForm({ a, all, firms, onClose }) {
     } catch (err) { toast(err.message, true); }
   };
   const F = (id, label, input) => html`<div class="field"><label class="lbl" for=${id}>${label}</label>${input}</div>`;
-  return html`<${Modal} title=${isNew ? 'Add MT5 account' : 'Edit ' + a.name} onClose=${onClose} wide><form class="stack" onSubmit=${save}>
+  return html`<${Modal} title=${isNew ? 'Add MT5 account' : 'Edit ' + a.name} onClose=${onClose} wide dirty=${dirty}><form class="stack" onSubmit=${save}>
     <div class="fields">
       ${F('an', 'Name shown in the journal', html`<input id="an" class="inp" required value=${v.name} onInput=${set('name')} placeholder="The5ers 100K #1"/>`)}
       ${F('al', 'MT5 login (number)', html`<input id="al" class="inp" required=${isNew} disabled=${!isNew} inputmode="numeric" value=${v.login} onInput=${set('login')}/>`)}
@@ -127,7 +131,7 @@ function AccountForm({ a, all, firms, onClose }) {
       ${F('az', 'Broker server time', html`<select id="az" class="inp" style="width:100%" value=${v.tz_mode} onChange=${set('tz_mode')}><option value="auto">Auto: UTC+2/+3 follows US daylight saving (most brokers)</option><option value="fixed">Fixed: use the offset as measured</option></select>`)}
       ${!isNew && F('ast', 'Status', html`<select id="ast" class="inp" style="width:100%" value=${v.status} onChange=${set('status')}><option value="active">Active</option><option value="archived">Archived (hidden, history kept)</option></select>`)}
     </div></details>
-    <div class="hstack"><button class="btn pri" type="submit">Save</button><button class="btn" type="button" onClick=${onClose}>Cancel</button></div>
+    <div class="hstack"><button class="btn pri" type="submit">Save</button><button class="btn" type="button" onClick=${() => (!dirty || confirm('Discard your changes?')) && onClose()}>Cancel</button></div>
   </form><//>`;
 }
 

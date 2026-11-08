@@ -1,4 +1,23 @@
-# Trade Journal — v1.0.1 (connector 1.01)
+# Trade Journal — v1.1 (connector 1.01)
+
+## Upgrading from v1.0 to v1.1
+
+```powershell
+npm run db:migrate     # adds the chart-links table, screenshot timeframes and the default-view setting
+npm run deploy
+```
+
+Your existing TradingView link on each idea is kept: it moves into the new links list. The EA doesn't change in v1.1.
+
+**New in v1.1**
+- **Account groups:** the account filter now has *All funded accounts* and *All challenge accounts* (and personal/demo if you have them). Groups follow each account's **Type**.
+- **Default view:** Settings → Default view sets the account or group the journal opens on.
+- **Setup windows:** clicking outside them no longer closes them. Escape or the X asks before throwing away changes.
+- **Layout:** uses the full width of large screens. On the dashboard, the side boxes (Daily preparation, Accounts) line up in one column. The chart draws at its real size.
+- **Trade lists:** an exit date/time and a **Duration** column. The Trade ideas page also has a **Costs** column.
+- **Costs:** every position, account and idea shows gross P&L, commission, swap, fees and net. Analytics and the Trade ideas page total them. The CSV export has them too, plus the duration.
+- **Charts:** you can add several TradingView links per idea, each with a timeframe and a note. Snapshot links (`tradingview.com/x/…`) show a preview. Screenshots also have a timeframe and a note.
+
 
 A personal trading journal that runs on your Cloudflare account. Trades sync from every MT5 account in near real time, related positions are grouped into **trading ideas**, and copies made by your Trade Copier are linked to their Master trade.
 
@@ -149,6 +168,11 @@ Any trade event (fill, close, S/L change) triggers an upload within about 1 seco
 - One record per item per **Brisbane day**, so the reset at 12:00 AM happens on its own.
 - Past days are kept exactly as they were (labels included) and are read-only.
 - Removing an item hides it from new days but keeps it in history.
+
+**Costs.**
+- Commission, swap and fees come from each MT5 deal: `DEAL_COMMISSION`, `DEAL_SWAP` and `DEAL_FEE`.
+- **Gross** is the trading result before costs, and **net = gross + commission + swap + fees** (costs are negative).
+- An open position's swap is included in its floating P&L, and shows up separately once the position closes.
 
 **Sample data.**
 - Settings → Load sample data, or "Sample" in the menu.

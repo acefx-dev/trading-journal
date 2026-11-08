@@ -97,5 +97,52 @@ assert.equal(r.status, 400);
 r = await send(mTok, '7' + uniq, { deals: [], reconcile: { from: srv(T0 - 86400000), to: srv(now + 86400000), tickets: [51177203, 51177300, 51177400, 51178000, 51178001, 51178002, 51179999] } });
 assert.deepEqual(r.missing, [51179999]);
 
+// 10. account groups: funded (the Master) vs challenge (the copy)
+const funded = await api('GET', `/ideas?acct=kind:funded&firm=${firm.id}`);
+const chall = await api('GET', `/ideas?acct=kind:challenge&firm=${firm.id}`);
+const jpF = funded.items.find((x) => x.id === jp.id), jpC = chall.items.find((x) => x.id === jp.id);
+assert.equal(jpF.net, 395.45, 'funded group = Master result');
+assert.equal(jpC.net, round(540 + 250 - 0.7 - 0.4), 'challenge group = copy result');
+assert.equal(jpC.r, round((540 + 250 - 0.7 - 0.4) / (310 + 120)), 'R falls back to the copy account when the lead is outside the group');
+r = await api('GET', `/ideas?acct=kind:demo&firm=${firm.id}`);
+assert.equal(r.items.length, 0);
+
+// 11. costs: commission is split out, gross + costs = net
+assert.equal(jpAll.commission, round(-0.35 - 0.2 - 0.7 - 0.4));
+assert.equal(round(jpAll.gross + jpAll.costs), jpAll.net);
+
+// 12. chart links with timeframe and note; only TradingView links
+r = await api('POST', `/ideas/${jp.id}/links`, { url: 'https://www.tradingview.com/x/AbC123/', timeframe: 'm5', note: 'entry' });
+assert.equal(r.ok, true);
+const linkId = r.id;
+r = await api('POST', `/ideas/${jp.id}/links`, { url: 'https://evil.example.com/x', timeframe: 'H1' });
+assert.equal(r.status, 400);
+r = await api('PUT', `/links/${linkId}`, { timeframe: 'H1', note: 'context' });
+let det2 = await api('GET', `/ideas/${jp.id}`);
+assert.equal(det2.links.length, 1); assert.equal(det2.links[0].timeframe, 'H1'); assert.equal(det2.links[0].note, 'context');
+await api('POST', `/ideas/${jp.id}/links`, { url: 'https://www.tradingview.com/chart/xyz/', timeframe: 'D1' });
+det2 = await api('GET', `/ideas/${jp.id}`);
+assert.equal(det2.links.length, 2);
+r = await api('DELETE', `/links/${linkId}`);
+det2 = await api('GET', `/ideas/${jp.id}`);
+assert.equal(det2.links.length, 1);
+
+// 13. screenshot with timeframe, then change it
+const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000' + '1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082', 'hex');
+const fd = new FormData(); fd.append('file', new Blob([png], { type: 'image/png' }), 'shot.png'); fd.append('timeframe', 'm15');
+const up = await (await fetch(BASE + `/api/ideas/${jp.id}/screenshots`, { method: 'POST', body: fd })).json();
+assert.equal(up.ok, true);
+r = await api('PUT', `/screenshots/${up.id}`, { timeframe: 'H4', caption: 'after the add' });
+det2 = await api('GET', `/ideas/${jp.id}`);
+const sh = det2.screenshots.find((x) => x.id === up.id);
+assert.equal(sh.timeframe, 'H4'); assert.equal(sh.caption, 'after the add');
+
+// 14. default view setting
+r = await api('PUT', '/settings', { default_scope: 'kind:funded' });
+assert.equal(r.settings.default_scope, 'kind:funded');
+r = await api('PUT', '/settings', { default_scope: 'drop table' });
+assert.equal(r.status, 400);
+await api('PUT', '/settings', { default_scope: 'all' });
+
 console.log('connector simulation: all checks passed');
 function round(x) { return Math.round(x * 100) / 100; }

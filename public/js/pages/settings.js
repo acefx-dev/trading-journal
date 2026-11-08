@@ -1,13 +1,36 @@
-import { html, useState, useStore, api, setStore, PageHead, Icon, toast, reloadBoot } from '../lib.js';
+import { html, useState, useStore, api, setStore, PageHead, Icon, toast, reloadBoot, KIND_GROUPS, scopeName } from '../lib.js';
 
 export function Settings() {
   const s = useStore();
   const b = s.boot;
   return html`<${PageHead} title="Settings" sub=${'Signed in as ' + b.user} filter=${false}/>
     <div class="row">
-      <div class="col" style="flex:1 1 420px"><${Grouping} b=${b}/><${Data} b=${b}/></div>
+      <div class="col" style="flex:1 1 420px"><${DefaultView} b=${b}/><${Grouping} b=${b}/><${Data} b=${b}/></div>
       <div class="col" style="flex:1 1 420px"><${Aliases} b=${b}/><${Mistakes} b=${b}/></div>
     </div>`;
+}
+
+function DefaultView({ b }) {
+  const s = useStore();
+  const [v, setV] = useState(b.settings.default_scope || 'all');
+  const accts = b.accounts.filter((a) => a.status === 'active');
+  const save = async (val) => {
+    setV(val);
+    try { await api('/settings', { method: 'PUT', body: { default_scope: val } }); await reloadBoot(); setStore({ acct: val, firm: 'all' }); toast('Default view saved'); }
+    catch (e) { toast(e.message, true); }
+  };
+  return html`<section class="card stack"><h2 class="h2">Default view</h2>
+    <div class="sub">The account or group the journal shows when you open it (dashboard and every page). You can still switch at the top of any page.</div>
+    <div class="field"><label class="lbl" for="defv">Open the journal on</label>
+      <select id="defv" class="inp" style="width:100%" value=${v} onChange=${(e) => save(e.target.value)}>
+        <option value="all">All accounts (combined)</option>
+        ${KIND_GROUPS.filter(([k]) => accts.some((a) => a.kind === k)).map(([k, l]) => html`<option value=${'kind:' + k}>${l}</option>`)}
+        <option disabled>──────────</option>
+        ${accts.map((a) => html`<option value=${String(a.id)}>${a.name}</option>`)}
+      </select></div>
+    ${s.mode === 'sample' && html`<div class="sub">This setting is shared by your data and the sample; account choices are listed for the data you're looking at now.</div>`}
+    <div class="sub">Groups follow each account's <b>Type</b> (Accounts & sync → Edit). Now showing: ${scopeName(b, s.acct)}.</div>
+  </section>`;
 }
 
 function Grouping({ b }) {

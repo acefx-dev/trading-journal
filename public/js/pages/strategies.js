@@ -33,7 +33,7 @@ function NewStrategy({ list, onClose, onDone }) {
     e.preventDefault();
     try { const r = await api('/strategies', { method: 'POST', body: { name, copy_from: copy || null } }); await reloadBoot(); onDone(r.id); } catch (err) { toast(err.message, true); }
   };
-  return html`<${Modal} title="New strategy" onClose=${onClose}><form class="stack" onSubmit=${go}>
+  return html`<${Modal} title="New strategy" onClose=${onClose} dirty=${!!name.trim()}><form class="stack" onSubmit=${go}>
     <div class="field"><label class="lbl" for="ns">Name</label><input id="ns" class="inp" value=${name} onInput=${(e) => setName(e.target.value)} required autofocus/></div>
     <div class="field"><label class="lbl" for="nc">Copy checklists from</label><select id="nc" class="inp" value=${copy} onChange=${(e) => setCopy(e.target.value)}><option value="">Start empty</option>${list.map((x) => html`<option value=${x.id}>${x.name}</option>`)}</select></div>
     <div class="hstack"><button class="btn pri" type="submit">Create</button><button class="btn" type="button" onClick=${onClose}>Cancel</button></div></form><//>`;

@@ -10,7 +10,8 @@ mobile = os.environ.get('MOBILE') == '1'
 
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--no-sandbox'])
-    ctx = b.new_context(viewport={'width': 390, 'height': 844} if mobile else {'width': 1440, 'height': 1000}, device_scale_factor=1)
+    W = int(os.environ.get('WIDTH', '1440'))
+    ctx = b.new_context(viewport={'width': 390, 'height': 844} if mobile else {'width': W, 'height': 1000}, device_scale_factor=1)
     page = ctx.new_page()
     errors = []
     page.on('console', lambda m: errors.append(f'[{m.type}] {m.text}') if m.type in ('error', 'warning') else None)
@@ -20,7 +21,7 @@ with sync_playwright() as p:
         page.goto(BASE + '/#/' + name)
         page.reload()
         page.wait_for_timeout(1800)
-        fn = os.path.join(OUT, (name.replace('/', '_') or 'dashboard') + ('_m' if mobile else '') + '.png')
+        fn = os.path.join(OUT, (name.replace('/', '_') or 'dashboard') + ('_m' if mobile else '_' + os.environ.get('WIDTH', '1440')) + '.png')
         page.screenshot(path=fn, full_page=True)
         txt = page.inner_text('main') if page.query_selector('main') else page.inner_text('body')
         print('==', name or 'dashboard', '| errors so far:', len(errors), '|', txt[:160].replace('\n', ' | '))

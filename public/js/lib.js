@@ -50,13 +50,34 @@ export async function api(path, opts = {}) {
   if (!res.ok) throw new Error(data.error || 'Request failed (' + res.status + ')');
   return data;
 }
+let firstBoot = true;
+/** Account filter values: 'all', 'kind:funded' / 'kind:challenge' / … (a group), or an account id. */
+export function validScope(boot, v) {
+  if (v === 'all') return true;
+  if (String(v).startsWith('kind:')) return boot.accounts.some((a) => a.status === 'active' && a.kind === v.slice(5));
+  return boot.accounts.some((a) => String(a.id) === String(v));
+}
 export async function reloadBoot() {
   const boot = await api('/bootstrap');
-  // drop a saved filter that no longer exists in this data set
-  const ids = new Set(boot.accounts.map((a) => String(a.id)));
   const firms = new Set(boot.firms.map((f) => String(f.id)));
-  setStore({ boot, acct: ids.has(store.acct) ? store.acct : 'all', firm: firms.has(store.firm) ? store.firm : 'all' });
+  let acct = store.acct, firm = store.firm;
+  if (firstBoot) {
+    // when the app opens, show the default account or group from Settings
+    firstBoot = false;
+    const def = boot.settings.default_scope;
+    if (def && validScope(boot, def)) { acct = def; firm = 'all'; }
+  }
+  // drop a saved filter that no longer exists in this data set
+  setStore({ boot, acct: validScope(boot, acct) ? acct : 'all', firm: firms.has(firm) ? firm : 'all' });
   return boot;
+}
+
+export const KIND_GROUPS = [['funded', 'All funded accounts'], ['challenge', 'All challenge accounts'], ['personal', 'All personal accounts'], ['demo', 'All demo accounts']];
+export function scopeName(boot, v) {
+  if (v === 'all') return 'All accounts (combined)';
+  if (String(v).startsWith('kind:')) return (KIND_GROUPS.find((k) => k[0] === v.slice(5)) || [, v])[1];
+  const a = boot.accounts.find((x) => String(x.id) === String(v));
+  return a ? a.name : 'Unknown account';
 }
 
 export const scopeQs = () => `acct=${encodeURIComponent(store.acct)}&firm=${encodeURIComponent(store.firm)}`;
@@ -104,6 +125,16 @@ export const fmt = {
     if (s < 3600) return Math.round(s / 60) + ' min ago';
     if (s < 86400) return Math.round(s / 3600) + ' h ago';
     return Math.round(s / 86400) + ' d ago';
+  },
+  /** how long: '48 min', '2 h 05 min', '3 d 4 h' */
+  dur(ms) {
+    if (ms == null || !isFinite(ms) || ms < 0) return '—';
+    const m = Math.round(ms / 60000);
+    if (m < 1) return '< 1 min';
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60), mm = m % 60;
+    if (h < 24) return h + ' h ' + String(mm).padStart(2, '0') + ' min';
+    return Math.floor(h / 24) + ' d ' + (h % 24) + ' h';
   },
   pf: (s) => (!s ? '—' : s.profitFactorInfinite ? '∞' : s.profitFactor == null ? '—' : s.profitFactor.toFixed(2)),
 };
@@ -157,16 +188,23 @@ export function Loading({ state, children }) {
   return children(state.data);
 }
 
-export function Modal({ title, onClose, children, wide }) {
+/**
+ * A dialog. Clicking outside it does NOT close it (so a half-filled form isn't lost).
+ * It closes with the X, Escape or the form's own Cancel. If `dirty` is true, closing asks first.
+ */
+export function Modal({ title, onClose, children, wide, dirty }) {
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const tryClose = () => { if (!dirtyRef.current || confirm('Discard your changes?')) onClose(); };
   useEffect(() => {
-    const k = (e) => { if (e.key === 'Escape') onClose(); };
+    const k = (e) => { if (e.key === 'Escape') tryClose(); };
     document.addEventListener('keydown', k);
     return () => document.removeEventListener('keydown', k);
   }, []);
-  return html`<div class="modal-bg" onClick=${(e) => e.target === e.currentTarget && onClose()}>
+  return html`<div class="modal-bg">
     <div class="modal" role="dialog" aria-modal="true" aria-label=${title} style=${wide ? 'max-width:860px' : ''}>
       <div class="spread"><h2 class="h2" style="font-size:18px">${title}</h2>
-        <button class="btn ghost sm" onClick=${onClose} aria-label="Close"><${Icon} name="x"/></button></div>
+        <button class="btn ghost sm" onClick=${tryClose} aria-label="Close"><${Icon} name="x"/></button></div>
       ${children}
     </div></div>`;
 }
@@ -177,8 +215,26 @@ export function Seg({ options, value, onChange, label }) {
 }
 
 /** Multi-series line chart. series: [{name, color, dash, points:[{x, y}]}], x numeric. */
-export function LineChart({ series, height = 220, yFmt = (v) => v, xLabels = [], zero = true, label }) {
-  const W = 640, H = height, L = 52, Rm = 12, T = 12, B = 28;
+/** Measures an element's width (for charts that draw at their real size). */
+export function useWidth(fallback = 640) {
+  const ref = useRef();
+  const [w, setW] = useState(fallback);
+  useEffect(() => {
+    if (!ref.current) return;
+    const ro = new ResizeObserver((es) => { const x = Math.round(es[0].contentRect.width); if (x > 0) setW(x); });
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, w];
+}
+
+export function LineChart(props) {
+  const [ref, w] = useWidth();
+  return html`<div ref=${ref} style="width:100%;min-width:0"><${LineChartInner} ...${props} width=${w}/></div>`;
+}
+
+function LineChartInner({ series, height = 240, yFmt = (v) => v, xLabels = [], zero = true, label, width }) {
+  const W = Math.max(280, width), H = height, L = 52, Rm = 12, T = 12, B = 28;
   const pts = series.flatMap((s) => s.points);
   if (!pts.length) return html`<div class="empty">No closed trades in this period yet.</div>`;
   let lo = Math.min(...pts.map((p) => p.y), zero ? 0 : Infinity), hi = Math.max(...pts.map((p) => p.y), zero ? 0 : -Infinity);
@@ -191,10 +247,21 @@ export function LineChart({ series, height = 220, yFmt = (v) => v, xLabels = [],
   return html`<svg viewBox=${`0 0 ${W} ${H}`} width="100%" role="img" aria-label=${label || 'Chart'}>
     ${ticks.map((v) => html`<line x1=${L} x2=${W - Rm} y1=${Y(v)} y2=${Y(v)} stroke=${v === 0 ? '#2A3242' : '#1A1F29'}/>
       <text x=${L - 8} y=${Y(v) + 4} fill="#97A0AE" font-size="11" text-anchor="end" font-family="JetBrains Mono, monospace">${yFmt(v)}</text>`)}
-    ${xLabels.map((l, k) => html`<text x=${X(l.x)} y=${H - 8} fill="#97A0AE" font-size="11" text-anchor=${X(l.x) < L + 30 ? 'start' : X(l.x) > W - Rm - 30 ? 'end' : 'middle'}>${l.label}</text>`)}
+    ${thinLabels(xLabels, X).map((l) => html`<text x=${X(l.x)} y=${H - 8} fill="#97A0AE" font-size="11" text-anchor=${X(l.x) < L + 30 ? 'start' : X(l.x) > W - Rm - 30 ? 'end' : 'middle'}>${l.label}</text>`)}
     ${series.map((s) => html`<path d=${s.points.map((p, i) => (i ? 'L' : 'M') + X(p.x).toFixed(1) + ' ' + Y(p.y).toFixed(1)).join(' ')}
       fill="none" stroke=${s.color} stroke-width=${s.dash ? 2 : 2.5} stroke-dasharray=${s.dash || ''} stroke-linejoin="round" stroke-linecap="round"/>`)}
   </svg>`;
+}
+// keep x labels at least 60 px apart (the last one always stays)
+function thinLabels(labels, X) {
+  const out = [];
+  let lastX = -Infinity;
+  labels.forEach((l, k) => {
+    const x = X(l.x), isLast = k === labels.length - 1;
+    if (x - lastX >= 60) { out.push(l); lastX = x; }
+    else if (isLast) { out.pop(); out.push(l); lastX = x; }
+  });
+  return out;
 }
 function niceTicks(lo, hi, n) {
   const span = hi - lo, step0 = span / n, mag = 10 ** Math.floor(Math.log10(step0));
@@ -229,6 +296,9 @@ export function ScopeFilter() {
     <label class="sr" for="acctf">Account</label>
     <select id="acctf" class="inp" value=${s.acct} onChange=${(e) => setStore({ acct: e.target.value })}>
       <option value="all">All accounts (combined)</option>
+      ${KIND_GROUPS.filter(([k]) => accounts.some((a) => a.kind === k && (s.firm === 'all' || String(a.firm_id) === s.firm)))
+        .map(([k, l]) => html`<option value=${'kind:' + k}>${l}</option>`)}
+      <option disabled>──────────</option>
       ${accounts.filter((a) => s.firm === 'all' || String(a.firm_id) === s.firm).map((a) => html`<option value=${a.id}>${a.name}${a.role === 'master' ? ' · Master' : a.role === 'copy' ? ' · Copy' : ''}</option>`)}
     </select></div>`;
 }

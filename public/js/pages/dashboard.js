@@ -47,26 +47,23 @@ function Body({ d, reload }) {
     <div class="card-head"><h2 class="h2">Open now</h2><span class="sub">Floating P&L updates every 15 s from MT5</span></div>
     <${IdeaTable} ideas=${d.open} open/></section>`}
 
-  <div class="row">
-    <section class="card stack" style="flex:2 1 520px">
+  <div class="dash-grid">
+    <section class="card stack">
       <div class="spread"><h2 class="h2">Return by account · this month</h2>
         <div class="hstack" style="font-size:12px;color:var(--text2)">${d.accounts.map((a, i) => html`<span class="hstack" style="gap:6px">
           <i style=${`width:16px;height:0;border-top:3px ${DASHES[i % 5] ? 'dashed' : 'solid'} ${COLORS[i % 5]};display:inline-block`}></i>${a.name}
           <b class=${cls('num', sgn(a.monthPct))}>${fmt.pct(a.monthPct)}</b></span>`)}</div></div>
-      <${LineChart} label="Return by account this month" yFmt=${(v) => (v > 0 ? '+' : '') + v.toFixed(1) + '%'}
+      <${LineChart} height=${300} label="Return by account this month" yFmt=${(v) => (v > 0 ? '+' : '') + v.toFixed(1) + '%'}
         series=${d.accounts.map((a, i) => ({ name: a.name, color: COLORS[i % 5], dash: DASHES[i % 5], points: [{ x: firstOfMonth(), y: 0 }, ...a.curve.map((p) => ({ x: p.t, y: p.pct }))] }))}
         xLabels=${monthLabels()}/>
       <div class="sub">Each line is that account's own closed P&L as a % of its balance at the start of the month.</div>
     </section>
     <${Prep} prep=${d.prep} reload=${reload}/>
-  </div>
-
-  <div class="row">
-    <section class="card flush" style="flex:3 1 700px">
+    <section class="card flush">
       <div class="card-head"><h2 class="h2">Recent trading ideas</h2><a href="#/ideas" style="font-size:13px">View all</a></div>
       ${d.recent.length ? html`<${IdeaTable} ideas=${d.recent}/>` : html`<div class="empty">No trades yet. They appear here as soon as the MT5 connector sends them.</div>`}
     </section>
-    <section class="card stack" style="flex:1 1 300px;gap:0">
+    <section class="card stack" style="gap:0">
       <div class="spread" style="margin-bottom:4px"><h2 class="h2">Accounts</h2><a href="#/accounts" style="font-size:13px">Manage</a></div>
       ${d.accounts.map((a) => html`<${AccountRow} a=${a}/>`)}
       ${d.accounts.length > 1 && html`<div class="sub" style="padding-top:12px">Combined balance <b class="num" style="color:var(--text)">${fmt.plain(d.accounts.reduce((x, a) => x + (a.balance || 0), 0))}</b></div>`}
@@ -81,8 +78,7 @@ function firstOfMonth() {
 function monthLabels() {
   const s = firstOfMonth(), out = [];
   const end = Date.now();
-  const step = 7 * 86400000;
-  for (let t = s; t <= end - 2 * 86400000; t += step) out.push({ x: t, label: fmt.date(t).replace(/^\w+,? /, '') });
+  for (let t = s; t <= end - 86400000; t += 86400000) out.push({ x: t, label: fmt.date(t).replace(/^\w+,? /, '') });
   out.push({ x: end, label: 'now' });
   return out;
 }
@@ -101,18 +97,24 @@ function AccountRow({ a }) {
   </div>`;
 }
 
-export function IdeaTable({ ideas, open, compact }) {
+const sameDay = (a, b) => fmt.date(a) === fmt.date(b);
+
+export function IdeaTable({ ideas, open, compact, costs }) {
   const multi = (store.boot?.accounts || []).length > 1;
   return html`<div class="scroll"><table class="tbl">
-    <thead><tr><th>Opened</th><th>Idea</th><th class="hide-sm">Strategy</th><th class="r hide-sm">Positions</th>${multi && html`<th class="hide-sm">Accounts</th>`}
-      <th class="r">${open ? 'Floating' : 'R'}</th><th class="r">P&L${multi ? ' (scope)' : ''}</th>${!compact && html`<th class="hide-sm">Review</th>`}</tr></thead>
+    <thead><tr><th>Opened</th>${!open && html`<th>Closed</th><th class="r">Duration</th>`}<th>Idea</th><th class="hide-sm">Strategy</th><th class="r hide-sm">Positions</th>${multi && html`<th class="hide-sm">Accounts</th>`}
+      <th class="r">${open ? 'Floating' : 'R'}</th>${costs && html`<th class="r" title="Commission + swap + fees">Costs</th>`}<th class="r">P&L${multi ? ' (scope)' : ''}</th>${!compact && html`<th class="hide-sm">Review</th>`}</tr></thead>
     <tbody>${ideas.map((i) => html`<tr class="click" onClick=${() => { location.hash = '#/ideas/' + i.id; }}>
       <td><div style="font-weight:500">${fmt.date(i.open_time)}</div><div class="sub num">${fmt.time(i.open_time)}</div></td>
+      ${!open && (i.close_time ? html`<td>${sameDay(i.open_time, i.close_time) ? html`<div class="sub">same day</div>` : html`<div style="font-weight:500">${fmt.date(i.close_time)}</div>`}<div class="sub num">${fmt.time(i.close_time)}</div></td>
+        <td class="num r">${fmt.dur(i.close_time - i.open_time)}</td>`
+        : html`<td><span class="chip b">Open</span></td><td class="num r mut">${fmt.dur(Date.now() - i.open_time)}</td>`)}
       <td><a href=${'#/ideas/' + i.id} class="hstack" style="color:var(--text);font-weight:600;flex-wrap:nowrap" onClick=${(e) => e.stopPropagation()}>${i.symbol} <${Dir} d=${i.direction}/></a></td>
       <td class="mut hide-sm">${i.strategy_name || '—'}</td>
       <td class="num r hide-sm">${i.lead_positions}</td>
       ${multi && html`<td class="hide-sm"><span class="chip b">${i.accounts.length} account${i.accounts.length > 1 ? 's' : ''}</span></td>`}
       <td class="r">${open ? html`<${Money} v=${i.floating}/>` : html`<${R} v=${i.r}/>`}</td>
+      ${costs && html`<td class="r num">${i.costs ? html`<span class=${i.costs < 0 ? 'neg' : 'pos'}>${fmt.money(i.costs)}</span>` : html`<span class="mut">$0.00</span>`}</td>`}
       <td class="r"><${Money} v=${i.net}/></td>
       ${!compact && html`<td class="hide-sm">${i.status === 'open' ? html`<span class="chip b">Open</span>` : i.reviewed ? html`<span class="chip g">Reviewed</span>` : html`<span class="chip a">Needs review</span>`}</td>`}
     </tr>`)}</tbody></table></div>`;
@@ -123,7 +125,7 @@ function Prep({ prep, reload }) {
   const [sel, setSel] = useState(withItems[0]?.id);
   const cur = withItems.find((p) => p.id === sel) || withItems[0];
   const [local, setLocal] = useState({});
-  if (!cur) return html`<section class="card stack" style="flex:1 1 320px"><h2 class="h2">Daily preparation</h2>
+  if (!cur) return html`<section class="card stack"><h2 class="h2">Daily preparation</h2>
     <div class="sub">Add a daily checklist to a strategy on the <a href="#/strategies">Strategies</a> page.</div></section>`;
   const items = cur.items.map((i) => ({ ...i, checked: local[i.id] ?? i.checked }));
   const done = items.filter((i) => i.checked).length;
@@ -132,7 +134,7 @@ function Prep({ prep, reload }) {
     try { await api('/checklists/daily', { method: 'PUT', body: { item_id: it.id, checked: !it.checked, day: cur.day } }); }
     catch (e) { toast(e.message, true); setLocal({ ...local, [it.id]: it.checked }); reload(); }
   };
-  return html`<section class="card stack" style="flex:1 1 320px">
+  return html`<section class="card stack">
     <div class="spread" style="align-items:flex-start"><div><h2 class="h2">Daily preparation</h2><div class="sub" style="margin-top:4px">Today · resets 12:00 AM Brisbane</div></div>
       <span class="chip b num">${done} / ${items.length}</span></div>
     ${withItems.length > 1 && html`<label class="sr" for="prepsel">Strategy</label><select id="prepsel" class="inp" value=${cur.id} onChange=${(e) => setSel(Number(e.target.value))}>${withItems.map((p) => html`<option value=${p.id}>${p.name} (${p.done}/${p.total})</option>`)}</select>`}
