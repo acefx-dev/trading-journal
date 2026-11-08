@@ -1,0 +1,21 @@
+# Cloudflare Pages project: static app in ./public, API in ./functions (bundled from ./src)
+name = "trading-journal"
+pages_build_output_dir = "public"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "trading-journal"
+database_id = "b74c2184-8720-4dc9-a46c-ebf3f9a04375"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "SHOTS"
+bucket_name = "trading-journal-screenshots"
+
+[vars]
+# Cloudflare Access (Zero Trust) settings. See README → "Login".
+ACCESS_TEAM_DOMAIN = "acefx.cloudflareaccess.com"
+ACCESS_AUD = "308b83cac3eb74fb0718f5de1d3f73faeee1b29e1f730f962af92c28dc671710"
+# Optional extra lock: only these emails (comma separated)
+ALLOWED_EMAILS = ""

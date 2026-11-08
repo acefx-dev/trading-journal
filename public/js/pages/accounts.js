@@ -1,0 +1,161 @@
+import { html, useState, useStore, useData, api, fmt, cls, Loading, PageHead, Icon, Modal, toast, reloadBoot, roleLabel, kindLabel, online, store } from '../lib.js';
+import { SampleEmpty } from './dashboard.js';
+
+export function Accounts() {
+  const s = useStore();
+  const b = s.boot;
+  const [edit, setEdit] = useState(null);   // account object or {} for new
+  const [firmEdit, setFirmEdit] = useState(null);
+  const [connect, setConnect] = useState(null);
+  const groups = [...b.firms.map((f) => ({ firm: f, accts: b.accounts.filter((a) => a.firm_id === f.id) })),
+    { firm: null, accts: b.accounts.filter((a) => !a.firm_id) }].filter((g) => g.firm || g.accts.length);
+  const log = useData(() => api('/sync/log?limit=60'), [b.now]);
+  return html`<${PageHead} title="Accounts & sync" sub="Prop firms, MT5 accounts and the read-only connector" filter=${false}>
+      <button class="btn" onClick=${() => setFirmEdit({})}><${Icon} name="plus" size=${16}/>Prop firm</button>
+      <button class="btn pri" onClick=${() => setEdit({})}><${Icon} name="plus" size=${16}/>MT5 account</button><//>
+    <${SampleEmpty}/>
+    ${groups.map((g) => html`<section class="card stack" style="gap:14px">
+      <div class="spread"><div><h2 class="h2">${g.firm ? g.firm.name : 'No prop firm'}</h2>
+        <div class="sub" style="margin-top:4px">${g.accts.length} account${g.accts.length === 1 ? '' : 's'}${g.firm && g.firm.website ? html` · <a href=${g.firm.website} target="_blank" rel="noopener noreferrer">${g.firm.website.replace(/^https?:\/\//, '')}</a>` : ''}</div></div>
+        ${g.firm && html`<button class="btn sm" onClick=${() => setFirmEdit(g.firm)}>Edit firm</button>`}</div>
+      ${g.accts.map((a) => html`<${AccountRow} a=${a} all=${b.accounts} onEdit=${() => setEdit(a)} onConnect=${() => setConnect(a)}/>`)}
+      ${!g.accts.length && html`<div class="sub">No accounts. Add one with “MT5 account”.</div>`}
+    </section>`)}
+    ${!b.accounts.length && !b.firms.length && html`<div class="card stack"><h2 class="h2">Start here</h2>
+      <ol style="margin:0;padding-left:18px;line-height:1.8"><li>Add your prop firm (optional) and each MT5 account.</li><li>Mark the account you trade on as <b>Master</b> and the copier's Slaves as <b>Copy</b>.</li>
+      <li>Press <b>Connect</b> on each account and follow the steps to install the connector in that terminal.</li></ol></div>`}
+    <div class="row">
+      <section class="card flush" style="flex:2 1 560px">
+        <div class="card-head"><div><h2 class="h2">Sync log</h2><div class="sub" style="margin-top:4px">Every import, retry, check and change. Deals are stored once by their MT5 ticket.</div></div>
+          <button class="btn sm" onClick=${log.reload}><${Icon} name="sync" size=${14}/>Refresh</button></div>
+        <${Loading} state=${log}>${(d) => d.items.length ? html`<div class="scroll"><table class="tbl"><thead><tr><th>Time (AEST)</th><th>Account</th><th>Event</th><th>Details</th></tr></thead>
+          <tbody>${d.items.map((l) => html`<tr><td class="num mut">${fmt.date(l.time)} ${fmt.timeS(l.time)}</td><td>${l.account_name || '—'}</td>
+            <td><span class=${cls('chip', l.level === 'error' ? 'r' : l.level === 'warn' ? 'a' : l.actor === 'connector' ? 'g' : '')}>${l.action}</span></td>
+            <td class="mut" style="white-space:normal;min-width:260px">${l.detail}</td></tr>`)}</tbody></table></div>` : html`<div class="empty">Nothing yet.</div>`}<//>
+      </section>
+      <section class="card stack" style="flex:1 1 340px">
+        <h2 class="h2">How sync works</h2>
+        <ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.5;color:var(--text2)">
+          <li>The <b>Trade Journal Connector</b> EA runs in each MT5 terminal. It only reads history, positions and balance; it has no order code.</li>
+          <li>On every trade it uploads within a second or two; otherwise every 15 s with positions open, or every 60 s when flat.</li>
+          <li>Each deal is stored once (by deal ticket); positions are rebuilt from deals, then grouped into ideas. Copies link to the Master by the copier's <span class="num">TC:</span> comment.</li>
+          <li>Once a day it sends the list of every deal ticket for the last 35 days. Anything missing is requested and filled in.</li>
+        </ol>
+        <div class="well hstack" style="align-items:flex-start;flex-wrap:nowrap;font-size:13px;line-height:1.5"><span class="mut"><${Icon} name="lock"/></span>
+          <span>The journal never sends orders. On your trading terminals, “read-only” comes from the connector's code. A broker-enforced guarantee needs a separate terminal logged in with the account's <b>investor password</b>.</span></div>
+      </section>
+    </div>
+    ${edit && html`<${AccountForm} a=${edit} all=${b.accounts} firms=${b.firms} onClose=${() => setEdit(null)}/>`}
+    ${firmEdit && html`<${FirmForm} f=${firmEdit} onClose=${() => setFirmEdit(null)}/>`}
+    ${connect && html`<${Connect} a=${connect} onClose=${() => setConnect(null)}/>`}`;
+}
+
+function AccountRow({ a, all, onEdit, onConnect }) {
+  const master = a.master_account_id && all.find((x) => x.id === a.master_account_id);
+  const on = online(a);
+  const rules = [a.daily_loss_pct && `Daily ${a.daily_loss_pct}%`, a.max_loss_pct && `Max ${a.max_loss_pct}% ${a.max_loss_type || ''}`, a.profit_target_pct && `Target ${a.profit_target_pct}%`].filter(Boolean).join(' · ');
+  return html`<div class="well" style=${`display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;align-items:center;${a.status === 'archived' ? 'opacity:.6' : ''}`}>
+    <div><div style="font-weight:600">${a.name}</div><div class="sub num" style="margin-top:4px">Login ${a.login_masked}${a.server ? ' · ' + a.server : ''}</div></div>
+    <div class="hstack" style="gap:6px"><span class=${cls('chip', a.kind === 'funded' && 'b')}>${kindLabel(a.kind)}${a.phase ? ' · ' + a.phase : ''}</span>
+      <span class="chip">${roleLabel(a)}${master ? ' of ' + master.name : ''}</span>${a.status === 'archived' && html`<span class="chip">Archived</span>`}</div>
+    <div><div class="lbl">Size · balance</div><div class="num" style="font-size:13px;margin-top:4px">${fmt.plain(a.size, 0)} · ${fmt.plain(a.balance)}</div></div>
+    <div><div class="lbl">Rules</div><div style="font-size:13px;margin-top:4px">${rules || '—'}</div></div>
+    <div><div class="lbl">Connector</div><div class="hstack" style="font-size:13px;margin-top:4px;gap:6px">
+      ${store.mode === 'sample' ? html`<span class="mut">Sample account</span>` : !a.token_hint ? html`<span class="dot" style="background:var(--dim)"></span>Not connected`
+        : html`<span class="dot" style=${`background:${on ? 'var(--pos)' : 'var(--amber)'}`}></span>${on ? 'Online' : 'Offline'} · ${fmt.ago(a.last_seen)}`}</div>
+      ${a.connector_version && a.connector_version !== 'sample' && html`<div class="sub">v${a.connector_version}${a.server_offset_sec != null ? ` · server UTC${a.server_offset_sec >= 0 ? '+' : '−'}${Math.abs(a.server_offset_sec / 3600)}` : ''}</div>`}</div>
+    <div class="hstack" style="justify-content:flex-end">${store.mode !== 'sample' && html`<button class=${cls('btn sm', !a.token_hint && 'pri')} onClick=${onConnect}>${a.token_hint ? 'Connection' : 'Connect'}</button>`}
+      <button class="btn sm" onClick=${onEdit}>Edit</button></div>
+  </div>`;
+}
+
+function FirmForm({ f, onClose }) {
+  const [v, setV] = useState({ name: f.name || '', website: f.website || '', notes: f.notes || '' });
+  const save = async (e) => {
+    e.preventDefault();
+    try { await api(f.id ? '/firms/' + f.id : '/firms', { method: f.id ? 'PUT' : 'POST', body: v }); await reloadBoot(); onClose(); } catch (err) { toast(err.message, true); }
+  };
+  const del = async () => { if (!confirm('Delete this firm?')) return; try { await api('/firms/' + f.id, { method: 'DELETE' }); await reloadBoot(); onClose(); } catch (err) { toast(err.message, true); } };
+  return html`<${Modal} title=${f.id ? 'Edit prop firm' : 'Add prop firm'} onClose=${onClose}><form class="stack" onSubmit=${save}>
+    <div class="field"><label class="lbl" for="fn">Name</label><input id="fn" class="inp" required value=${v.name} onInput=${(e) => setV({ ...v, name: e.target.value })}/></div>
+    <div class="field"><label class="lbl" for="fw">Website</label><input id="fw" class="inp" type="url" value=${v.website} onInput=${(e) => setV({ ...v, website: e.target.value })} placeholder="https://"/></div>
+    <div class="field"><label class="lbl" for="fno">Notes (rules, payout dates…)</label><textarea id="fno" class="inp" value=${v.notes} onInput=${(e) => setV({ ...v, notes: e.target.value })}></textarea></div>
+    <div class="hstack"><button class="btn pri" type="submit">Save</button><button class="btn" type="button" onClick=${onClose}>Cancel</button>${f.id && html`<button class="btn danger" type="button" onClick=${del}>Delete</button>`}</div>
+  </form><//>`;
+}
+
+function AccountForm({ a, all, firms, onClose }) {
+  const isNew = !a.id;
+  const [v, setV] = useState({
+    name: a.name || '', login: a.login || '', firm_id: a.firm_id || '', kind: a.kind || 'challenge', phase: a.phase || '', size: a.size ?? '',
+    role: a.role || 'standalone', master_account_id: a.master_account_id || '', daily_loss_pct: a.daily_loss_pct ?? 5, max_loss_pct: a.max_loss_pct ?? 10,
+    max_loss_type: a.max_loss_type || 'static', profit_target_pct: a.profit_target_pct ?? '', tz_mode: a.tz_mode || 'auto', status: a.status || 'active',
+  });
+  const set = (k) => (e) => setV({ ...v, [k]: e.target.value });
+  const masters = all.filter((x) => x.id !== a.id && x.role !== 'copy' && x.status === 'active');
+  const save = async (e) => {
+    e.preventDefault();
+    try {
+      const body = { ...v, login: isNew ? v.login : undefined };
+      if (!isNew) delete body.login;
+      await api(isNew ? '/accounts' : '/accounts/' + a.id, { method: isNew ? 'POST' : 'PUT', body });
+      await reloadBoot(); toast('Account saved'); onClose();
+    } catch (err) { toast(err.message, true); }
+  };
+  const F = (id, label, input) => html`<div class="field"><label class="lbl" for=${id}>${label}</label>${input}</div>`;
+  return html`<${Modal} title=${isNew ? 'Add MT5 account' : 'Edit ' + a.name} onClose=${onClose} wide><form class="stack" onSubmit=${save}>
+    <div class="fields">
+      ${F('an', 'Name shown in the journal', html`<input id="an" class="inp" required value=${v.name} onInput=${set('name')} placeholder="The5ers 100K #1"/>`)}
+      ${F('al', 'MT5 login (number)', html`<input id="al" class="inp" required=${isNew} disabled=${!isNew} inputmode="numeric" value=${v.login} onInput=${set('login')}/>`)}
+      ${F('af', 'Prop firm', html`<select id="af" class="inp" style="width:100%" value=${v.firm_id} onChange=${set('firm_id')}><option value="">None</option>${firms.map((f) => html`<option value=${f.id}>${f.name}</option>`)}</select>`)}
+      ${F('ak', 'Type', html`<select id="ak" class="inp" style="width:100%" value=${v.kind} onChange=${set('kind')}><option value="challenge">Challenge</option><option value="funded">Funded</option><option value="personal">Personal</option><option value="demo">Demo</option></select>`)}
+      ${F('ap', 'Phase (optional)', html`<input id="ap" class="inp" value=${v.phase} onInput=${set('phase')} placeholder="Phase 1"/>`)}
+      ${F('as', 'Initial account size', html`<input id="as" class="inp" type="number" min="0" step="any" value=${v.size} onInput=${set('size')} placeholder="100000"/>`)}
+    </div>
+    <div class="fields">
+      ${F('ar', 'Role with the trade copier', html`<select id="ar" class="inp" style="width:100%" value=${v.role} onChange=${set('role')}><option value="standalone">Standalone (not copied)</option><option value="master">Master (you trade here)</option><option value="copy">Copy (a Slave of the copier)</option></select>`)}
+      ${v.role === 'copy' && F('am', 'Copies trades from', html`<select id="am" class="inp" style="width:100%" required value=${v.master_account_id} onChange=${set('master_account_id')}><option value="">Choose the Master…</option>${masters.map((m) => html`<option value=${m.id}>${m.name}</option>`)}</select>`)}
+    </div>
+    <div class="sub">Rules here are for display and analytics only. Your limits are enforced in MT5 by Risk Guard Rail and the copier. Check your firm's exact rules.</div>
+    <div class="fields">
+      ${F('ad', 'Daily loss limit %', html`<input id="ad" class="inp" type="number" min="0" step="0.1" value=${v.daily_loss_pct} onInput=${set('daily_loss_pct')}/>`)}
+      ${F('ax', 'Max loss %', html`<input id="ax" class="inp" type="number" min="0" step="0.1" value=${v.max_loss_pct} onInput=${set('max_loss_pct')}/>`)}
+      ${F('at', 'Max loss type', html`<select id="at" class="inp" style="width:100%" value=${v.max_loss_type} onChange=${set('max_loss_type')}><option value="static">Static</option><option value="trailing">Trailing</option></select>`)}
+      ${F('ag', 'Profit target % (challenges)', html`<input id="ag" class="inp" type="number" min="0" step="0.1" value=${v.profit_target_pct} onInput=${set('profit_target_pct')}/>`)}
+    </div>
+    <details><summary class="sub" style="cursor:pointer">Advanced</summary><div class="fields" style="margin-top:12px">
+      ${F('az', 'Broker server time', html`<select id="az" class="inp" style="width:100%" value=${v.tz_mode} onChange=${set('tz_mode')}><option value="auto">Auto: UTC+2/+3 follows US daylight saving (most brokers)</option><option value="fixed">Fixed: use the offset as measured</option></select>`)}
+      ${!isNew && F('ast', 'Status', html`<select id="ast" class="inp" style="width:100%" value=${v.status} onChange=${set('status')}><option value="active">Active</option><option value="archived">Archived (hidden, history kept)</option></select>`)}
+    </div></details>
+    <div class="hstack"><button class="btn pri" type="submit">Save</button><button class="btn" type="button" onClick=${onClose}>Cancel</button></div>
+  </form><//>`;
+}
+
+function Connect({ a, onClose }) {
+  const [token, setToken] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const url = location.origin + '/api/ingest';
+  const make = async () => {
+    if (a.token_hint && !confirm('Create a new token? The connector using the old one stops working until you paste the new one.')) return;
+    setBusy(true);
+    try { const r = await api(`/accounts/${a.id}/token`, { method: 'POST' }); setToken(r.token); reloadBoot(); } catch (e) { toast(e.message, true); }
+    setBusy(false);
+  };
+  const copy = (t) => navigator.clipboard?.writeText(t).then(() => toast('Copied'), () => {});
+  return html`<${Modal} title=${'Connect ' + a.name} onClose=${onClose} wide>
+    ${a.token_hint && !token && html`<div class="warn okbox">This account has a token (ending …${a.token_hint}). Last contact ${fmt.ago(a.last_seen)}.</div>`}
+    <ol style="margin:0;padding-left:20px;display:flex;flex-direction:column;gap:14px;line-height:1.55">
+      <li><b>Create a token.</b> It's shown once; paste it into the connector.
+        <div class="hstack" style="margin-top:8px"><button class="btn pri" disabled=${busy} onClick=${make}>${a.token_hint ? 'Create a new token' : 'Create token'}</button></div>
+        ${token && html`<div class="stack" style="gap:6px;margin-top:10px"><div class="code">${token}</div><div class="hstack"><button class="btn sm" onClick=${() => copy(token)}>Copy token</button><span class="sub">Keep it private. It lets the holder upload trades to this account only.</span></div></div>`}</li>
+      <li><b>Allow the journal's address in MT5.</b> In the terminal logged in to login ${a.login_masked}: Tools → Options → Expert Advisors → tick <i>Allow WebRequest for listed URL</i> and add:
+        <div class="code" style="margin-top:6px">${location.origin}</div></li>
+      <li><b>Install the connector.</b> Copy <span class="num">TradeJournalConnector.mq5</span> into File → Open Data Folder → MQL5 → Experts, open it in MetaEditor and press F7.</li>
+      <li><b>Attach it to its own chart</b> (any symbol), not your Risk Guard Rail chart. Inputs:
+        <div class="code" style="margin-top:6px">Journal upload URL = ${url}<br/>Connector token = (the token above)</div>
+        <button class="btn sm" style="margin-top:6px" onClick=${() => copy(url)}>Copy URL</button></li>
+      <li>The chart shows <i>“OK · … sent”</i> within a few seconds, and this page shows the account as online. The first upload sends the last 90 days of history.</li>
+    </ol>
+    <div class="sub">The terminal must be running for trades to sync. If it was closed, the connector catches up from the account history when it starts again.</div>
+  <//>`;
+}

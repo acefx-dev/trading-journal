@@ -1,0 +1,3 @@
+# Local development only: skips the Cloudflare Access check on localhost.
+# Never add this setting to the deployed site.
+DEV_AUTH_BYPASS=1

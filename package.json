@@ -1,0 +1,17 @@
+{
+  "name": "trading-journal",
+  "version": "1.0.0",
+  "description": "Personal trading journal: Cloudflare Pages + D1 + R2, MT5 read-only connector",
+  "scripts": {
+    "dev": "wrangler d1 migrations apply trading-journal --local && wrangler pages dev --port 8788",
+    "test": "node --test test/logic.test.mjs",
+    "test:connector": "node test/connector_sim.mjs http://127.0.0.1:8788",
+    "db:migrate": "wrangler d1 migrations apply trading-journal --remote",
+    "deploy": "wrangler pages deploy"
+  },
+  "type": "module",
+  "private": "true",
+  "devDependencies": {
+    "wrangler": "^4.158.0"
+  }
+}
