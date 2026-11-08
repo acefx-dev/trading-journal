@@ -6,7 +6,7 @@ export function Settings() {
   return html`<${PageHead} title="Settings" sub=${'Signed in as ' + b.user} filter=${false}/>
     <div class="row">
       <div class="col" style="flex:1 1 420px"><${DefaultView} b=${b}/><${Grouping} b=${b}/><${Data} b=${b}/></div>
-      <div class="col" style="flex:1 1 420px"><${Aliases} b=${b}/><${Mistakes} b=${b}/></div>
+      <div class="col" style="flex:1 1 420px"><${Alerts} b=${b}/><${Aliases} b=${b}/><${Mistakes} b=${b}/></div>
     </div>`;
 }
 
@@ -48,6 +48,45 @@ function Grouping({ b }) {
       <div class="sub">Always required: same account, same instrument (after symbol names below), same direction. Unrelated trades are never combined.</div>
       <div><button class="btn pri" type="submit">Save</button></div>
     </form></section>`;
+}
+
+function Alerts({ b }) {
+  const st = b.settings;
+  const [v, setV] = useState({ warn_pct: st.warn_pct || '70', alert_daily_hour: st.alert_daily_hour || '7',
+    alert_rules: st.alert_rules !== '0', alert_daily: st.alert_daily !== '0', alert_weekly: st.alert_weekly !== '0' });
+  const [busy, setBusy] = useState(false);
+  const save = async (patch) => {
+    const nv = { ...v, ...patch }; setV(nv);
+    try { await api('/settings', { method: 'PUT', body: nv }); await reloadBoot(); toast('Saved'); } catch (e) { toast(e.message, true); }
+  };
+  const act = async (url, body, msg) => {
+    setBusy(true);
+    try { const r = await api(url, { method: 'POST', body }); toast(msg(r)); await reloadBoot(); } catch (e) { toast(e.message, true); }
+    setBusy(false);
+  };
+  const tog = (k, label) => html`<label class="ck" style="border:0"><input type="checkbox" checked=${v[k]} onChange=${() => save({ [k]: !v[k] })}/><span>${label}</span></label>`;
+  return html`<section class="card stack"><h2 class="h2">Warnings and Telegram alerts</h2>
+    <div class="fields">
+      <div class="field"><label class="lbl" for="wp">Warn when a prop rule is this % used</label>
+        <input id="wp" class="inp" type="number" min="10" max="99" value=${v.warn_pct} onChange=${(e) => save({ warn_pct: e.target.value })}/></div>
+      <div class="field"><label class="lbl" for="ah">Send summaries after (Brisbane hour)</label>
+        <input id="ah" class="inp" type="number" min="0" max="23" value=${v.alert_daily_hour} onChange=${(e) => save({ alert_daily_hour: e.target.value })}/></div>
+    </div>
+    <div class="sub">Dashboard banners appear at this level; 90% shows as danger. Rule warnings are also sent to Telegram once per level per firm day.</div>
+    ${!b.telegram ? html`<div class="warn"><div class="stack" style="gap:6px"><b>Telegram isn't set up yet</b>
+      <span>1. In Telegram, message <b>@BotFather</b> → <i>/newbot</i> → copy the bot token.</span>
+      <span>2. In your project folder run <span class="num">npx wrangler pages secret put TELEGRAM_BOT_TOKEN</span> and paste it (or add it under the Pages project → Settings → Variables and secrets).</span>
+      <span>3. Redeploy (automatic if GitHub deploys are on), open your bot, press <b>Start</b>, then come back here.</span></div></div>`
+    : html`<div class="hstack">${st.telegram_chat_id ? html`<span class="chip g">Connected to chat ${st.telegram_chat_id}</span>` : html`<span class="chip a">No chat yet</span>`}
+        <button class="btn sm" disabled=${busy} onClick=${() => act('/alerts/find-chat', {}, (r) => 'Connected to ' + r.chat.name)}>Find my chat</button></div>
+      <div class="sub">Open your bot in Telegram, press Start (or send any message), then “Find my chat”.</div>
+      ${tog('alert_rules', 'Prop-rule warnings (warning, 90%, limit reached)')}
+      ${tog('alert_daily', 'Daily summary of the previous trading day')}
+      ${tog('alert_weekly', 'Weekly summary on Saturday')}
+      <div class="hstack">${[['', 'Test message'], ['rules', 'Rule check now'], ['daily', 'Yesterday\'s summary'], ['week', 'Last 7 days']].map(([k, l]) => html`
+        <button class="btn sm" disabled=${busy || !st.telegram_chat_id} onClick=${() => act('/alerts/test', { kind: k }, () => 'Sent')}>${l}</button>`)}</div>
+      <div class="sub">Summaries go out with the first connector upload after the hour above, so a terminal must be running.</div>`}
+  </section>`;
 }
 
 function Aliases({ b }) {

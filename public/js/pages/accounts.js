@@ -1,5 +1,6 @@
 import { html, useState, useStore, useData, api, fmt, cls, Loading, PageHead, Icon, Modal, toast, reloadBoot, roleLabel, kindLabel, online, store } from '../lib.js';
-import { SampleEmpty } from './dashboard.js';
+import { SampleEmpty, PropBars } from './dashboard.js';
+import { parseStatement } from '../importer.js';
 
 export function Accounts() {
   const s = useStore();
@@ -7,6 +8,8 @@ export function Accounts() {
   const [edit, setEdit] = useState(null);   // account object or {} for new
   const [firmEdit, setFirmEdit] = useState(null);
   const [connect, setConnect] = useState(null);
+  const [importing, setImporting] = useState(null);
+  const prop = useData(() => api('/prop?acct=all&firm=all&archived=1'), [b.now]);
   const groups = [...b.firms.map((f) => ({ firm: f, accts: b.accounts.filter((a) => a.firm_id === f.id) })),
     { firm: null, accts: b.accounts.filter((a) => !a.firm_id) }].filter((g) => g.firm || g.accts.length);
   const log = useData(() => api('/sync/log?limit=60'), [b.now]);
@@ -18,7 +21,8 @@ export function Accounts() {
       <div class="spread"><div><h2 class="h2">${g.firm ? g.firm.name : 'No prop firm'}</h2>
         <div class="sub" style="margin-top:4px">${g.accts.length} account${g.accts.length === 1 ? '' : 's'}${g.firm && g.firm.website ? html` · <a href=${g.firm.website} target="_blank" rel="noopener noreferrer">${g.firm.website.replace(/^https?:\/\//, '')}</a>` : ''}</div></div>
         ${g.firm && html`<button class="btn sm" onClick=${() => setFirmEdit(g.firm)}>Edit firm</button>`}</div>
-      ${g.accts.map((a) => html`<${AccountRow} a=${a} all=${b.accounts} onEdit=${() => setEdit(a)} onConnect=${() => setConnect(a)}/>`)}
+      ${g.accts.map((a) => html`<${AccountRow} a=${a} all=${b.accounts} p=${prop.data && prop.data.items.find((x) => x.account_id === a.id)}
+        onEdit=${() => setEdit(a)} onConnect=${() => setConnect(a)} onImport=${() => setImporting(a)}/>`)}
       ${!g.accts.length && html`<div class="sub">No accounts. Add one with “MT5 account”.</div>`}
     </section>`)}
     ${!b.accounts.length && !b.firms.length && html`<div class="card stack"><h2 class="h2">Start here</h2>
@@ -47,10 +51,11 @@ export function Accounts() {
     </div>
     ${edit && html`<${AccountForm} a=${edit} all=${b.accounts} firms=${b.firms} onClose=${() => setEdit(null)}/>`}
     ${firmEdit && html`<${FirmForm} f=${firmEdit} onClose=${() => setFirmEdit(null)}/>`}
-    ${connect && html`<${Connect} a=${connect} onClose=${() => setConnect(null)}/>`}`;
+    ${connect && html`<${Connect} a=${connect} onClose=${() => setConnect(null)}/>`}
+    ${importing && html`<${ImportStatement} a=${importing} onClose=${() => setImporting(null)}/>`}`;
 }
 
-function AccountRow({ a, all, onEdit, onConnect }) {
+function AccountRow({ a, all, p, onEdit, onConnect, onImport }) {
   const master = a.master_account_id && all.find((x) => x.id === a.master_account_id);
   const on = online(a);
   const rules = [a.daily_loss_pct && `Daily ${a.daily_loss_pct}%`, a.max_loss_pct && `Max ${a.max_loss_pct}% ${a.max_loss_type || ''}`, a.profit_target_pct && `Target ${a.profit_target_pct}%`].filter(Boolean).join(' · ');
@@ -65,7 +70,12 @@ function AccountRow({ a, all, onEdit, onConnect }) {
         : html`<span class="dot" style=${`background:${on ? 'var(--pos)' : 'var(--amber)'}`}></span>${on ? 'Online' : 'Offline'} · ${fmt.ago(a.last_seen)}`}</div>
       ${a.connector_version && a.connector_version !== 'sample' && html`<div class="sub">v${a.connector_version}${a.server_offset_sec != null ? ` · server UTC${a.server_offset_sec >= 0 ? '+' : '−'}${Math.abs(a.server_offset_sec / 3600)}` : ''}</div>`}</div>
     <div class="hstack" style="justify-content:flex-end">${store.mode !== 'sample' && html`<button class=${cls('btn sm', !a.token_hint && 'pri')} onClick=${onConnect}>${a.token_hint ? 'Connection' : 'Connect'}</button>`}
+      ${store.mode !== 'sample' && html`<button class="btn sm" onClick=${onImport} title="Import past trades from an MT5 statement">Import</button>`}
       <button class="btn sm" onClick=${onEdit}>Edit</button></div>
+    ${p && (p.rules.length > 0 || p.target || p.missing) && html`<div style="grid-column:1 / -1;border-top:1px solid var(--line);padding-top:12px" class="stack">
+      <div class="spread"><span class="lbl">Prop rules (warnings only)</span><span class="sub">Firm day reset ${p.reset ? fmt.dt(p.reset) : '—'} · next ${p.nextReset ? fmt.dt(p.nextReset) : '—'} (Brisbane)</span></div>
+      <${PropBars} p=${p} wide/>
+      ${p.rules.map((r) => html`<div class="sub">${r.label}: ${r.note}.</div>`)}</div>`}
   </div>`;
 }
 
@@ -92,6 +102,7 @@ function AccountForm({ a, all, firms, onClose }) {
     name: a.name || '', login: a.login || '', firm_id: a.firm_id || '', kind: a.kind || 'challenge', phase: a.phase || '', size: a.size ?? '',
     role: a.role || 'standalone', master_account_id: a.master_account_id || '', daily_loss_pct: a.daily_loss_pct ?? 5, max_loss_pct: a.max_loss_pct ?? 10,
     max_loss_type: a.max_loss_type || 'static', profit_target_pct: a.profit_target_pct ?? '', tz_mode: a.tz_mode || 'auto', status: a.status || 'active',
+    daily_reset_tz: a.daily_reset_tz || 'server', daily_reset_time: a.daily_reset_time || '00:00', daily_loss_of: a.daily_loss_of || 'start', daily_loss_from: a.daily_loss_from || 'higher',
   }));
   const [v, setV] = useState(init);
   const dirty = JSON.stringify(v) !== JSON.stringify(init);
@@ -127,6 +138,15 @@ function AccountForm({ a, all, firms, onClose }) {
       ${F('at', 'Max loss type', html`<select id="at" class="inp" style="width:100%" value=${v.max_loss_type} onChange=${set('max_loss_type')}><option value="static">Static</option><option value="trailing">Trailing</option></select>`)}
       ${F('ag', 'Profit target % (challenges)', html`<input id="ag" class="inp" type="number" min="0" step="0.1" value=${v.profit_target_pct} onInput=${set('profit_target_pct')}/>`)}
     </div>
+    <div class="fields">
+      ${F('art', 'Daily reset: time zone', html`<select id="art" class="inp" style="width:100%" value=${v.daily_reset_tz} onChange=${set('daily_reset_tz')}>
+        <option value="server">Broker server time (MT5 Market Watch)</option><option value="UTC">UTC</option><option value="America/New_York">New York (e.g. 17:00 ET)</option>
+        <option value="Europe/London">London</option><option value="Europe/Prague">Central Europe (CET)</option><option value="Asia/Dubai">Dubai</option>
+        <option value="Asia/Jerusalem">Israel</option><option value="Australia/Sydney">Sydney</option><option value="Australia/Brisbane">Brisbane</option></select>`)}
+      ${F('arh', 'Daily reset: time', html`<input id="arh" class="inp" type="time" value=${v.daily_reset_time} onInput=${set('daily_reset_time')}/>`)}
+      ${F('alo', 'Daily loss limit is a % of', html`<select id="alo" class="inp" style="width:100%" value=${v.daily_loss_of} onChange=${set('daily_loss_of')}><option value="start">The start-of-day amount</option><option value="initial">The initial account size</option></select>`)}
+      ${F('alf', 'Daily loss is measured from', html`<select id="alf" class="inp" style="width:100%" value=${v.daily_loss_from} onChange=${set('daily_loss_from')}><option value="higher">The higher of balance and equity at the reset</option><option value="balance">The balance at the reset</option></select>`)}
+    </div>
     <details><summary class="sub" style="cursor:pointer">Advanced</summary><div class="fields" style="margin-top:12px">
       ${F('az', 'Broker server time', html`<select id="az" class="inp" style="width:100%" value=${v.tz_mode} onChange=${set('tz_mode')}><option value="auto">Auto: UTC+2/+3 follows US daylight saving (most brokers)</option><option value="fixed">Fixed: use the offset as measured</option></select>`)}
       ${!isNew && F('ast', 'Status', html`<select id="ast" class="inp" style="width:100%" value=${v.status} onChange=${set('status')}><option value="active">Active</option><option value="archived">Archived (hidden, history kept)</option></select>`)}
@@ -161,5 +181,53 @@ function Connect({ a, onClose }) {
       <li>The chart shows <i>“OK · … sent”</i> within a few seconds, and this page shows the account as online. The first upload sends the last 90 days of history.</li>
     </ol>
     <div class="sub">The terminal must be running for trades to sync. If it was closed, the connector catches up from the account history when it starts again.</div>
+  <//>`;
+}
+
+function ImportStatement({ a, onClose }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState(null);
+  const [name, setName] = useState('');
+  const known = a.server_offset_sec;
+  const [mode, setMode] = useState(known != null && known !== 7200 && known !== 10800 ? 'fixed' : 'auto');
+  const [hours, setHours] = useState(known != null ? known / 3600 : 2);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);
+  const pick = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    setErr(null); setRows(null); setDone(null); setName(f.name);
+    try { setRows(parseStatement(new Uint8Array(await f.arrayBuffer()), f.name)); } catch (x) { setErr(x.message); }
+  };
+  const go = async () => {
+    setBusy(true);
+    try { setDone(await api(`/accounts/${a.id}/import`, { method: 'POST', body: { positions: rows, tz_mode: mode, offset_hours: Number(hours) } })); reloadBoot(); }
+    catch (x) { setErr(x.message); }
+    setBusy(false);
+  };
+  const sum = rows ? rows.reduce((s, r) => s + r.profit + r.commission + r.swap, 0) : 0;
+  const t = rows && rows.length ? [Math.min(...rows.map((r) => r.open_time)), Math.max(...rows.map((r) => r.close_time))] : null;
+  const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+  return html`<${Modal} title=${'Import history into ' + a.name} onClose=${onClose} wide dirty=${!!rows && !done}>
+    <ol style="margin:0;padding-left:20px;line-height:1.6">
+      <li>In MT5 (logged in to ${a.login_masked}): <b>Toolbox → History</b>, choose the period (right-click → <i>All History</i> or a custom period).</li>
+      <li>Right-click the history → <b>Report → HTML</b> and save it. Or use a CSV with the columns listed in the README.</li>
+      <li>Choose the file here, check the preview, then Import.</li></ol>
+    <input type="file" accept=".html,.htm,.csv" onChange=${pick} aria-label="Statement file"/>
+    ${err && html`<div class="warn err">${err}</div>`}
+    ${rows && html`<div class="well stack" style="gap:6px">
+      <b>${rows.length} closed position${rows.length === 1 ? '' : 's'} found in ${name}</b>
+      ${t && html`<span class="sub">${day(t[0])} to ${day(t[1])} (server dates) · net ${fmt.money(sum)} · ${[...new Set(rows.map((r) => r.symbol))].join(', ')}</span>`}
+      <span class="sub">Positions the connector already sent are skipped. Imported trades are replaced automatically if the connector later sends the same positions.</span></div>
+    <div class="fields">
+      <div class="field"><label class="lbl" for="imz">Broker server time in this report</label>
+        <select id="imz" class="inp" style="width:100%" value=${mode} onChange=${(e) => setMode(e.target.value)}>
+          <option value="auto">UTC+2 in winter, +3 in US summer (most brokers)</option><option value="fixed">A fixed offset</option></select></div>
+      ${mode === 'fixed' && html`<div class="field"><label class="lbl" for="imh">Offset from UTC (hours)</label><input id="imh" class="inp" type="number" step="0.5" min="-12" max="14" value=${hours} onInput=${(e) => setHours(e.target.value)}/></div>`}
+    </div>
+    <div class="sub">The report shows each position's final S/L, not the first one, so R for imported trades is an estimate (from the trade's own P&L per point). Trades without a S/L get no R.</div>`}
+    ${done ? html`<div class="warn okbox">Imported ${done.imported} position(s) into ${done.ideas} new idea(s); ${done.skipped} skipped. <a href="#/ideas">See them</a></div>
+      <div><button class="btn" onClick=${onClose}>Close</button></div>`
+      : html`<div class="hstack"><button class="btn pri" disabled=${!rows || !rows.length || busy} onClick=${go}>${busy ? 'Importing…' : 'Import'}</button><button class="btn" onClick=${onClose}>Cancel</button></div>`}
   <//>`;
 }

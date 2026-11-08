@@ -1,0 +1,2 @@
+position,symbol,type,volume,open_time,open_price,sl,tp,close_time,close_price,commission,swap,profit
+555,EURUSD,sell,0.5,2026.10.01 10:00:00,1.08500,1.08800,,2026.10.01 12:00:00,1.08200,-3.5,0,150

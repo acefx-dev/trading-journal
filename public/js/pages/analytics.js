@@ -1,5 +1,6 @@
 import { html, useState, useStore, useData, api, scopeQs, fmt, sgn, cls, Kpi, Money, R, Loading, PageHead, Seg, LineChart, HBar } from '../lib.js';
 import { SampleEmpty } from './dashboard.js';
+import { sessionsInBrisbane } from '../sessions.js';
 
 export function Analytics() {
   const s = useStore();
@@ -64,8 +65,9 @@ function Body({ d, basis }) {
       <td class="r"><${R} v=${a.expectancyR}/></td><td class="num r">${fmt.pf(a)}</td><td class="num r neg">${fmt.pct(-a.drawdownPct)}</td><td class="r"><${Money} v=${a.totalNet} dec=${0}/></td></tr>`)}</tbody></table></div></section>
   <div class="row">
     <section class="card stack" style="flex:1 1 360px"><h2 class="h2">By instrument</h2>${d.bySymbol.sort((a, b) => b.totalNet - a.totalNet).map((x) => html`<${HBar} label=${x.key} sub=${`${x.count} ideas · ${fmt.rate(x.winRate)}`} value=${x.totalNet} max=${maxSym}/>`)}</section>
-    <section class="card stack" style="flex:1 1 360px"><h2 class="h2">By session (Brisbane open time)</h2>${d.bySession.sort((a, b) => b.totalNet - a.totalNet).map((x) => html`<${HBar} label=${x.key} sub=${`${x.count} ideas · ${fmt.r(x.expectancyR)}`} value=${x.totalNet} max=${maxSes}/>`)}
-      <div class="sub">Tokyo 08:00–16:00 · London 16:00–22:00 · New York 22:00–06:00 AEST (approximate; London and New York shift with daylight saving).</div></section>
+    <section class="card stack" style="flex:1 1 360px"><h2 class="h2">By session</h2>${d.bySession.sort((a, b) => b.totalNet - a.totalNet).map((x) => html`<${HBar} label=${x.key} sub=${`${x.count} ideas · ${fmt.r(x.expectancyR)}`} value=${x.totalNet} max=${maxSes}/>`)}
+      <div class="sub">By each trade's open time. Sessions use each city's local hours (Sydney 07–16, Tokyo 09–18, London 08–17, New York 08–17), so daylight saving is handled.
+        Today in Brisbane: ${sessionsInBrisbane().map((x) => `${x.name} ${x.from}–${x.to}`).join(' · ')}. Where two overlap, the trade counts for the one that opened last.</div></section>
     <section class="card stack" style="flex:1 1 360px"><h2 class="h2">By weekday</h2>${b.byWeekday.sort((a, c) => DOW.indexOf(a.key) - DOW.indexOf(c.key)).map((x) => html`<${HBar} label=${x.key} sub=${`${x.count} ideas`} value=${x.totalNet} max=${maxDow}/>`)}</section>
   </div>
   <section class="card stack"><h2 class="h2">Trading behaviour</h2>

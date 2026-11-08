@@ -30,6 +30,7 @@ function Body({ d, reload }) {
   const ls = d.lastDaySummary;
   const s30 = d.stats30;
   return html`
+  <${PropBanner} accounts=${d.accounts}/>
   <section class="kpis" aria-label="Key figures">
     <${Kpi} label=${showToday ? 'Today' : d.lastDay ? 'Last session · ' + fmt.date(Date.parse(d.lastDay + 'T12:00:00+10:00')) : 'Last session'}
       value=${fmt.money(d.lastDayNet)} tone=${sgn(d.lastDayNet)}
@@ -83,17 +84,41 @@ function monthLabels() {
   return out;
 }
 
+const LEVEL_COLOR = { ok: 'var(--pos)', warn: 'var(--amber)', danger: '#FF8A4C', breached: 'var(--neg)' };
+
+/** Daily loss / max loss / target bars from the prop-rule monitor. */
+export function PropBars({ p, wide }) {
+  if (!p) return null;
+  if (p.missing) return html`<div class="sub">${p.missing}</div>`;
+  return html`<div class=${wide ? '' : 'stack'} style=${wide ? 'display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px 24px' : 'gap:8px'}>
+    ${p.rules.map((r) => html`<div class="stack" style="gap:5px">
+      <div class="spread sub"><span>${r.label}</span><span class="num">${fmt.plain(r.used, 0)} of ${fmt.plain(r.limit, 0)} · ${Math.round(r.pct)}%</span></div>
+      <${Bar} pct=${r.pct} color=${LEVEL_COLOR[r.level]}/>
+      ${r.level !== 'ok' && html`<div class="sub" style=${`color:${LEVEL_COLOR[r.level]}`}>Room left ${fmt.plain(r.room, 0)} · floor ${fmt.plain(r.floor, 0)}</div>`}</div>`)}
+    ${p.target && html`<div class="stack" style="gap:5px"><div class="spread sub"><span>${p.target.label}</span>
+      <span class="num">${fmt.money(p.target.made, 0)} of ${fmt.plain(p.target.target, 0)} · ${Math.round(p.target.pct)}%</span></div>
+      <${Bar} pct=${p.target.pct} color=${p.target.reached ? 'var(--pos)' : 'var(--blue)'}/></div>`}
+    ${p.stale && html`<div class="sub">Equity as of ${fmt.ago(p.last_seen)} (terminal not sending)</div>`}
+  </div>`;
+}
+
+/** Banner when an account is close to a rule. */
+export function PropBanner({ accounts }) {
+  const hot = accounts.filter((a) => a.prop && a.prop.level && a.prop.level !== 'ok');
+  if (!hot.length) return null;
+  const worst = hot.some((a) => a.prop.level === 'breached' || a.prop.level === 'danger');
+  return html`<div class=${cls('warn', worst && 'err')} role="alert"><div class="stack" style="gap:4px">
+    ${hot.flatMap((a) => a.prop.rules.filter((r) => r.level !== 'ok').map((r) => html`<span><b>${a.name}:</b> ${r.label} ${Math.round(r.pct)}% used
+      (${r.level === 'breached' ? 'limit reached' : 'room left ' + fmt.plain(r.room, 0)})</span>`))}
+    <span class="sub" style="color:inherit;opacity:.85">The journal only warns. Risk Guard Rail and the copier enforce your limits in MT5.</span></div></div>`;
+}
+
 function AccountRow({ a }) {
-  const isChallenge = a.kind === 'challenge' && a.targetPct;
   return html`<div class="stack" style="gap:8px;padding:14px 0;border-bottom:1px solid #1A1F29">
     <div class="spread"><span style="font-weight:600">${a.name}</span>
       <span class=${cls('chip', a.role === 'master' && 'b')}>${a.kind === 'funded' ? 'Funded' : a.kind === 'challenge' ? 'Challenge' : a.kind} · ${a.role === 'master' ? 'Master' : a.role === 'copy' ? 'Copy' : 'Standalone'}</span></div>
-    <div class="spread"><span class="num" style="font-size:16px;font-weight:600">${fmt.plain(a.balance)}</span><span class="sub">Today <${Money} v=${a.today}/></span></div>
-    ${isChallenge ? html`<div class="spread sub"><span>Profit target ${a.targetPct}%</span><span class="num">${fmt.pct(a.totalPct)} · ${Math.round(a.targetProgress || 0)}%</span></div>
-      <${Bar} pct=${a.targetProgress} color=${a.targetProgress >= 100 ? 'var(--pos)' : 'var(--blue)'}/>`
-      : a.maxLossPct ? html`<div class="spread sub"><span>Room to max loss (${a.maxLossPct}%)</span><span class="num">${fmt.plain(a.roomToMaxLoss, 0)}</span></div>
-      <${Bar} pct=${a.roomToMaxLoss != null && a.size ? a.roomToMaxLoss / (a.size * a.maxLossPct / 100) * 100 : 0} color="var(--pos)"/>`
-      : html`<div class="sub">Since start ${fmt.money(a.total)} (${fmt.pct(a.totalPct)})</div>`}
+    <div class="spread"><span class="num" style="font-size:16px;font-weight:600">${fmt.plain(a.balance)}</span><span class="sub" title="Since the firm's daily reset, including open trades">Since reset <${Money} v=${a.prop && a.prop.todayPnl != null ? a.prop.todayPnl : a.today}/></span></div>
+    ${a.prop ? html`<${PropBars} p=${a.prop}/>` : html`<div class="sub">Since start ${fmt.money(a.total)} (${fmt.pct(a.totalPct)})</div>`}
   </div>`;
 }
 

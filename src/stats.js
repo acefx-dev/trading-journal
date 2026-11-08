@@ -10,6 +10,7 @@
 
 import { bneParts, bneDay } from './time.js';
 import { round } from './build.js';
+import { sessionOf } from '../public/js/sessions.js';
 
 const avg = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
@@ -77,14 +78,7 @@ export function groupSummary(ideas, keyFn) {
   return [...m.entries()].map(([key, xs]) => ({ key, ...summary(xs) }));
 }
 
-/** Session by Brisbane open hour. Approximate: London and New York shift with their DST. */
-export function sessionOf(utcMs) {
-  const { hour } = bneParts(utcMs);
-  if (hour >= 8 && hour < 16) return 'Tokyo';
-  if (hour >= 16 && hour < 22) return 'London';
-  if (hour >= 22 || hour < 6) return 'New York';
-  return 'Off-hours';
-}
+export { sessionOf };
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 

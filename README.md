@@ -1,4 +1,31 @@
-# Trade Journal — v1.1 (connector 1.01)
+# Trade Journal — v1.2 (connector 1.01)
+
+## Upgrading to v1.2
+
+**Once only: turn on automatic deploys** (then every update I push goes live by itself, including database changes):
+1. Cloudflare dashboard → **My Profile → API Tokens → Create Token → Custom token**.
+   - Permissions: **Account → Cloudflare Pages → Edit** and **Account → D1 → Edit**. Account resources: your account.
+   - Create it and copy the token.
+2. Cloudflare dashboard → **Workers & Pages** → copy your **Account ID** (right-hand side).
+3. GitHub → `acefx-dev/trading-journal` → **Settings → Secrets and variables → Actions → New repository secret**:
+   - `CLOUDFLARE_API_TOKEN` = the token
+   - `CLOUDFLARE_ACCOUNT_ID` = the account ID
+4. GitHub → **Actions** → *Test and deploy* → **Run workflow**. It runs the tests, applies new migrations (v1.2 adds `0003`), and deploys.
+
+Until the secrets are in, deploy by hand as before: `npm run db:migrate` then `npm run deploy`.
+
+**New in v1.2**
+- **Session times fixed.** Each session now uses its own city's local hours (Sydney 07–16, Tokyo 09–18, London 08–17, New York 08–17), so daylight saving is handled. Today in Brisbane that's Tokyo 10:00–19:00, London 18:00–03:00 and New York 23:00–08:00. Trades in an overlap count for the session that opened last. Analytics shows the day's Brisbane times.
+- **Prop-rule monitor.** For each account: daily loss used since the firm's reset, room to the max-loss floor (static or trailing), and progress to the profit target.
+  - Bars on the dashboard and on Accounts & sync, plus a banner when a rule passes the warning level (default 70%; 90% shows as danger).
+  - Set each account's reset (broker server time, UTC, New York 17:00 …) and how its daily loss is measured under **Edit**.
+  - It only warns. Risk Guard Rail and the copier still enforce the limits.
+- **Review page.** Week or month, with:
+  - Net, win rate, expectancy, checklist and daily-prep compliance, and costs.
+  - Results by day, best and worst ideas, instruments and strategies, and mistakes.
+  - Your goals, what went well and what to improve (saved automatically).
+- **Telegram alerts** (optional, see section 8): rule warnings, a daily summary and a Saturday weekly summary.
+- **Import old history.** Accounts & sync → **Import** on an account. Load an MT5 history report (HTML) or a CSV, check the preview, then import. If the connector later sends the same positions, its real deals replace the imported ones, so nothing is counted twice.
 
 ## Upgrading from v1.0 to v1.1
 
@@ -211,11 +238,34 @@ npm run test:connector         # (second terminal) simulate the MT5 connector
 | A copy shows as its own idea | Its comment had no `TC:` and no Master position matched within 60 s. Use **Add position** on the right idea, or check the account's role/Master |
 | Times off by one hour on old trades | Set the account's Broker server time to **Fixed** |
 
+## 8. Telegram alerts (optional)
+
+1. In Telegram, message **@BotFather** → `/newbot` → choose a name. Copy the **bot token**.
+2. In your project folder: `npx wrangler pages secret put TELEGRAM_BOT_TOKEN` and paste the token. Or in the dashboard: Workers & Pages → trading-journal → Settings → **Variables and secrets** → add a *secret* named `TELEGRAM_BOT_TOKEN`.
+3. Deploy again (automatic with GitHub deploys: re-run the workflow).
+4. Open your new bot in Telegram and press **Start**. In the journal: **Settings → Warnings and Telegram alerts → Find my chat**. You get a "Connected" message.
+5. Choose which alerts you want, and use the test buttons.
+
+| Alert | When |
+|---|---|
+| Prop-rule warning | A rule passes the warning level, 90%, or 100%. Once per level per account per firm day |
+| Daily summary | The previous Brisbane trading day (Mon–Sat), after the hour you choose (default 07:00) |
+| Weekly summary | Monday to Saturday morning, sent from Saturday at that hour |
+
+Cloudflare Pages has no timer, so alerts go out with the **next connector upload** (every 15–60 s while a terminal runs). With every terminal closed, nothing is sent until one starts again.
+
+## 9. Importing old history
+
+- **MT5 report:** Toolbox → **History** → right-click → choose the period (*All History* or a custom one) → right-click → **Report → HTML**. Then in the journal: Accounts & sync → **Import** on that account. MT5 saves the report as UTF-16 and the journal reads it.
+- **CSV** instead: a header row with `position, symbol, type, volume, open_time, open_price, sl, tp, close_time, close_price, commission, swap, profit`. Times as `2026.11.06 09:14:03`, in broker server time.
+- Pick the report's **server time**: UTC+2/+3 (most brokers) or a fixed offset.
+- Limits of a report: it shows each position's **final** S/L, so R for imported trades is estimated from the trade's own P&L per point, and trades without a S/L get no R. It has no copier comments, so imported copies are matched to their Master by symbol, direction and time (60 s).
+- I tested the reader on a report I built in MT5's layout. If your real report isn't read, send it to me and I'll adjust the reader.
+
 ## 7. Known limits
 
 - **Read-only is by design, not enforced by the broker.** The connector contains no order code. A broker-enforced guarantee would need a separate terminal per account logged in with the **investor password**. That's possible, but not with the same terminal that runs Risk Guard Rail and the copier.
 - **The journal only sees what a running terminal sends.** If the PC is off, trades appear when the terminal starts again (history catch-up).
 - **Prop-firm rules are shown, not enforced.** The journal can't know exactly how each firm measures daily loss.
 - **Netting accounts:** position reversals (in/out deals) are handled approximately. Prop accounts are usually hedging accounts, which are fully supported.
-- **Sessions** in Analytics are fixed Brisbane hours (Tokyo 08–16, London 16–22, New York 22–06). They shift by an hour when London/New York change their clocks.
 - **Drawdown** is measured on closed trades (the balance curve), not intraday equity.

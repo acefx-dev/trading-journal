@@ -144,5 +144,61 @@ r = await api('PUT', '/settings', { default_scope: 'drop table' });
 assert.equal(r.status, 400);
 await api('PUT', '/settings', { default_scope: 'all' });
 
+// 15. prop-rule monitor: the Master is funded 50K, daily 5%, max 10%
+await api('PUT', `/accounts/${master.id}`, { daily_reset_tz: 'UTC', daily_reset_time: '00:00', daily_loss_from: 'balance' });
+r = await api('PUT', `/accounts/${master.id}`, { daily_reset_tz: 'Mars/Olympus' });
+assert.equal(r.status, 400, 'bad reset time zone refused');
+const prop = await api('GET', `/prop?acct=${master.id}`);
+const pm = prop.items[0];
+assert.equal(pm.rules.length, 2);
+assert.equal(pm.rules.find((x) => x.key === 'max').floor, 45000);
+assert.ok(['ok', 'warn', 'danger', 'breached'].includes(pm.level));
+const dash = await api('GET', `/dashboard?acct=${master.id}`);
+assert.ok(dash.accounts[0].prop, 'dashboard carries prop status');
+
+// 16. weekly review: stats for the week + saved notes
+const rv = await api('GET', `/review?kind=week&firm=${firm.id}`);
+assert.ok(rv.period.startsWith('week:'));
+r = await api('PUT', '/review', { period: rv.period, goals: 'Max 2 ideas a day', improve: 'Wait for the close', rating: 4 });
+assert.equal(r.ok, true);
+const rv2 = await api('GET', `/review?kind=week&firm=${firm.id}`);
+assert.equal(rv2.notes.goals, 'Max 2 ideas a day'); assert.equal(rv2.notes.rating, 4);
+r = await api('PUT', '/review', { period: 'drop table', goals: 'x' });
+assert.equal(r.status, 400);
+
+// 17. statement import into the copy account; a real deal later replaces the imported one
+const day0 = Date.parse('2026-10-15T00:00:00Z');
+const imp = await api('POST', `/accounts/${copy.id}/import`, { tz_mode: 'fixed', offset_hours: 2, positions: [
+  { position: 777001, symbol: 'JP225.cash', type: 'buy', volume: 2, open_time: day0 + 3 * 3600000, open_price: 50000, sl: 49950, tp: 0,
+    close_time: day0 + 4 * 3600000, close_price: 50100, commission: -0.7, swap: 0, profit: 200 },
+  { position: 777002, symbol: 'EURUSD', type: 'sell', volume: 1, open_time: day0 + 10 * 3600000, open_price: 1.085, sl: 1.088, tp: 0,
+    close_time: day0 + 30 * 3600000, close_price: 1.082, commission: -7, swap: -2.5, profit: 300 },
+  { position: 9120233, symbol: 'JP225.cash', type: 'buy', volume: 2, open_time: day0, open_price: 1, sl: 0, tp: 0, close_time: day0 + 1, close_price: 1, commission: 0, swap: 0, profit: 0 },
+] });
+assert.equal(imp.imported, 2); assert.equal(imp.skipped, 1, 'already-synced position skipped');
+const impIdeas = await api('GET', `/ideas?acct=${copy.id}&from=2026-10-15&to=2026-10-17`);
+const eu = impIdeas.items.find((x) => x.symbol === 'EURUSD');
+assert.ok(eu, 'imported trade is an idea');
+assert.equal(eu.r, 0.97, 'R = net 290.50 / estimated risk 300 (300 × 0.003 / 0.003)');
+assert.equal(eu.swap, -2.5);
+const jpImp = impIdeas.items.find((x) => x.symbol === 'JP225');
+assert.equal(jpImp.net, 199.3);
+// now the connector sends the real deals of 777001 → imported ones dropped, no double counting
+const t0s = day0 + 3 * 3600000 + 2 * 3600000; // server time
+r = await send(cTok, '8' + uniq, { deals: [
+  { ticket: 7800001, order: 777001, position: 777001, time: t0s, type: 0, entry: 0, symbol: 'JP225.cash', volume: 2, price: 50000, profit: 0, commission: -0.7, swap: 0, fee: 0, sl: 49950, tp: 0, risk: 100, magic: 0, reason: 0, comment: '' },
+  { ticket: 7800002, order: 777001, position: 777001, time: t0s + 3600000, type: 1, entry: 1, symbol: 'JP225.cash', volume: 2, price: 50100, profit: 200, commission: 0, swap: 0, fee: 0, sl: 0, tp: 0, risk: null, magic: 0, reason: 0, comment: '' },
+], positions_complete: false });
+const afterReal = await api('GET', `/ideas?acct=${copy.id}&from=2026-10-15&to=2026-10-17`);
+const jpReal = afterReal.items.find((x) => x.symbol === 'JP225');
+assert.equal(jpReal.net, 199.3, 'not doubled after real deals arrive');
+assert.equal(jpReal.r, 1.99, 'R now from the connector\'s exact risk');
+r = await api('POST', `/accounts/${copy.id}/import?mode=sample`, { positions: [{}] });
+assert.equal(r.status, 400, 'no imports into sample mode');
+
+// 18. alerts without a bot token: clear error, uploads unaffected
+r = await api('POST', '/alerts/test', {});
+assert.equal(r.status, 500); assert.match(r.error, /TELEGRAM_BOT_TOKEN/);
+
 console.log('connector simulation: all checks passed');
 function round(x) { return Math.round(x * 100) / 100; }

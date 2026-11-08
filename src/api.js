@@ -2,13 +2,15 @@
 
 import { all, first, run, stmt, audit, getSettings, getAliases, sha256Hex, randomToken, HttpError } from './db.js';
 import { requireUser } from './auth.js';
-import { handleIngest, groupAccount } from './ingest.js';
+import { handleIngest, groupAccount, processUpload } from './ingest.js';
 import { resolveScope, loadIdeas, aggregate } from './ideas.js';
 import { summary, drawdown, groupSummary, rBuckets, behaviour, sessionOf } from './stats.js';
 import { bneDay, bneDayStart, bneToday, addDays, bneMonthRange } from './time.js';
 import { netOf, round } from './build.js';
 import { canonical } from './symbols.js';
 import { seedSample, clearSample } from './sample.js';
+import { loadPropStatus } from './prop.js';
+import { afterUpload, sendTelegram, findChat, summaryText, ruleText } from './alerts.js';
 
 const DAY = 86400000;
 const json = (data, status = 200, headers = {}) => new Response(JSON.stringify(data), {
@@ -22,11 +24,17 @@ const on = (method, pattern, fn) => {
   routes.push({ method, re, keys, fn });
 };
 
-export async function handle(request, env) {
+export async function handle(request, env, ctx = null) {
   const url = new URL(request.url);
   const path = url.pathname.replace(/^\/api/, '') || '/';
   try {
-    if (path === '/ingest' && request.method === 'POST') return json(await handleIngest(request, env));
+    if (path === '/ingest' && request.method === 'POST') {
+      const result = await handleIngest(request, env);
+      // alerts and summaries run after the reply, so the connector isn't kept waiting
+      const job = afterUpload(env, env.DB, result.account_id).catch((e) => console.error('alerts', e));
+      if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
+      return json(result);
+    }
     // Opening this address in a browser shows whether the connector can reach it without a login.
     if (path === '/ingest' && request.method === 'GET') return json({ ok: true, message: 'Connector endpoint reachable. If you see this without signing in, the Cloudflare Access Bypass rule works.' });
     if (path === '/health') return json({ ok: true });
@@ -60,12 +68,13 @@ const optNum = (x) => (x === '' || x == null ? null : isFinite(Number(x)) ? Numb
 
 on('GET', '/me', (ctx) => ({ email: ctx.user.email, dev: !!ctx.user.dev }));
 
-on('GET', '/bootstrap', async ({ db, sample, user }) => {
+on('GET', '/bootstrap', async ({ db, sample, user, env }) => {
   const [firms, accounts, strategies, mistakes, aliases, settings, sampleCount] = await Promise.all([
     all(db, 'SELECT * FROM prop_firms WHERE is_sample = ? ORDER BY name', sample),
     all(db, `SELECT id, firm_id, name, login, server, broker, currency, kind, phase, size, role, master_account_id, daily_loss_pct,
       max_loss_pct, max_loss_type, profit_target_pct, token_hint, last_seen, last_deal_msc, connector_version, server_offset_sec,
-      tz_mode, balance, equity, status, created_at FROM accounts WHERE is_sample = ? ORDER BY id`, sample),
+      tz_mode, balance, equity, status, created_at, daily_reset_tz, daily_reset_time, daily_loss_of, daily_loss_from
+      FROM accounts WHERE is_sample = ? ORDER BY id`, sample),
     all(db, 'SELECT * FROM strategies WHERE is_sample = ? ORDER BY archived, name', sample),
     all(db, 'SELECT * FROM mistakes ORDER BY active DESC, label'),
     all(db, 'SELECT * FROM symbol_aliases ORDER BY canonical, alias'),
@@ -79,7 +88,7 @@ on('GET', '/bootstrap', async ({ db, sample, user }) => {
     s.trade = items.filter((i) => i.strategy_id === s.id && i.kind === 'trade');
   }
   return { user: user.email, now: Date.now(), today: bneToday(), firms, accounts: accounts.map(maskAccount), strategies, mistakes, aliases,
-    settings: settings.raw, sampleLoaded: sampleCount.n > 0 };
+    settings: settings.raw, sampleLoaded: sampleCount.n > 0, telegram: !!env.TELEGRAM_BOT_TOKEN };
 });
 
 function maskAccount(a) {
@@ -89,7 +98,7 @@ function maskAccount(a) {
 
 on('PUT', '/settings', async ({ db, request }) => {
   const b = await request.json();
-  const allowed = { group_window_min: [1, 1440], copy_match_window_sec: [5, 3600] };
+  const allowed = { group_window_min: [1, 1440], copy_match_window_sec: [5, 3600], warn_pct: [10, 99], alert_daily_hour: [0, 23] };
   const ops = [];
   for (const [k, [lo, hi]] of Object.entries(allowed)) {
     if (b[k] == null) continue;
@@ -101,6 +110,14 @@ on('PUT', '/settings', async ({ db, request }) => {
     const v = String(b.default_scope);
     if (!/^(all|kind:(funded|challenge|personal|demo)|\d+)$/.test(v)) throw new HttpError(400, 'Bad default view');
     ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'default_scope', v));
+  }
+  for (const k of ['alert_rules', 'alert_daily', 'alert_weekly']) {
+    if (b[k] != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', k, b[k] ? '1' : '0'));
+  }
+  if (b.telegram_chat_id != null) {
+    const c = String(b.telegram_chat_id).trim();
+    if (c && !/^-?\d{1,20}$/.test(c)) throw new HttpError(400, 'Telegram chat id is a number');
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'telegram_chat_id', c));
   }
   if (b.group_require_overlap != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'group_require_overlap', b.group_require_overlap ? '1' : '0'));
   if (ops.length) {
@@ -160,7 +177,9 @@ on('DELETE', '/firms/:id', async ({ db, params }) => {
 });
 
 const ACCOUNT_FIELDS = ['firm_id', 'name', 'login', 'server', 'currency', 'kind', 'phase', 'size', 'role', 'master_account_id',
-  'daily_loss_pct', 'max_loss_pct', 'max_loss_type', 'profit_target_pct', 'tz_mode', 'status'];
+  'daily_loss_pct', 'max_loss_pct', 'max_loss_type', 'profit_target_pct', 'tz_mode', 'status',
+  'daily_reset_tz', 'daily_reset_time', 'daily_loss_of', 'daily_loss_from'];
+const RESET_TZS = ['server', 'UTC', 'America/New_York', 'Europe/London', 'Europe/Prague', 'Australia/Brisbane', 'Australia/Sydney', 'Asia/Dubai', 'Asia/Jerusalem'];
 
 function cleanAccount(b) {
   const o = {};
@@ -172,6 +191,10 @@ function cleanAccount(b) {
   if (o.status && !['active', 'archived'].includes(o.status)) throw new HttpError(400, 'Bad status');
   if (o.tz_mode && !['auto', 'fixed'].includes(o.tz_mode)) throw new HttpError(400, 'Bad time mode');
   if (o.max_loss_type && !['static', 'trailing'].includes(o.max_loss_type)) throw new HttpError(400, 'Bad max loss type');
+  if ('daily_reset_tz' in o && !RESET_TZS.includes(o.daily_reset_tz)) throw new HttpError(400, 'Bad reset time zone');
+  if ('daily_reset_time' in o && !/^([01]\d|2[0-3]):[0-5]\d$/.test(o.daily_reset_time || '')) throw new HttpError(400, 'Reset time is HH:MM');
+  if ('daily_loss_of' in o && !['start', 'initial'].includes(o.daily_loss_of)) throw new HttpError(400, 'Bad daily loss basis');
+  if ('daily_loss_from' in o && !['higher', 'balance'].includes(o.daily_loss_from)) throw new HttpError(400, 'Bad daily loss reference');
   if ('login' in o) o.login = String(o.login || '').trim();
   if ('name' in o) o.name = String(o.name || '').trim().slice(0, 60);
   if (o.role && o.role !== 'copy') o.master_account_id = null;
@@ -253,6 +276,8 @@ on('GET', '/dashboard', async ({ db, sample, q }) => {
       dailyLossPct: a.daily_loss_pct, drawdown: dd, curve,
     };
   });
+  const props = await loadPropStatus(db, scoped, Number((await getSettings(db)).raw.warn_pct) || 70, now);
+  for (const a of accounts) a.prop = props.find((p) => p.account_id === a.id) || null;
   const ddWorst = accounts.reduce((w, a) => (!w || a.drawdown.maxDdPct > w.drawdown.maxDdPct ? a : w), null);
 
   // today's preparation checklists
@@ -768,4 +793,147 @@ on('POST', '/accounts/:id/regroup-pending', async ({ db, params }) => {
   const rows = await all(db, "SELECT position_id FROM positions WHERE account_id = ? AND idea_id IS NULL", acct.id);
   const r = rows.length ? await groupAccount(db, acct, rows.map((x) => x.position_id)) : { created: 0, joined: 0, linked: 0 };
   return { ok: true, ...r, waiting: rows.length };
+});
+
+
+// ------------------------------------------------------------------ prop-rule monitor
+
+on('GET', '/prop', async ({ db, sample, q }) => {
+  const scope = await resolveScope(db, sample, q);
+  const set = (await getSettings(db)).raw;
+  return { warnPct: Number(set.warn_pct) || 70, items: await loadPropStatus(db, scope.scoped, Number(set.warn_pct) || 70) };
+});
+
+// ------------------------------------------------------------------ alerts (Telegram)
+
+on('POST', '/alerts/find-chat', async ({ db, env }) => {
+  const c = await findChat(env);
+  await run(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'telegram_chat_id', c.id);
+  await sendTelegram(env, c.id, '<b>Trade Journal</b>\nConnected. Alerts will come to this chat.');
+  return { ok: true, chat: c };
+});
+
+on('POST', '/alerts/test', async ({ db, env, request }) => {
+  const b = await request.json().catch(() => ({}));
+  const chat = (await getSettings(db)).raw.telegram_chat_id;
+  const now = Date.now(), today = bneToday(now);
+  let text;
+  if (b.kind === 'daily') {
+    const y = addDays(today, -1);
+    text = await summaryText(db, 'Trade Journal · yesterday (' + y + ')', bneDayStart(y), bneDayStart(today));
+  } else if (b.kind === 'week') {
+    text = await summaryText(db, 'Trade Journal · last 7 days', bneDayStart(addDays(today, -6)), now);
+  } else if (b.kind === 'rules') {
+    const accts = await all(db, "SELECT * FROM accounts WHERE is_sample = 0 AND status = 'active'");
+    const st = await loadPropStatus(db, accts, Number((await getSettings(db)).raw.warn_pct) || 70, now);
+    const lines = st.flatMap((x) => (x.rules || []).map((r) => `${x.name}: ${r.label} ${r.pct.toFixed(0)}% used (room $${Math.round(r.room).toLocaleString('en-US')})`));
+    text = '<b>Trade Journal · rule check</b>\n' + (lines.join('\n') || 'No accounts with rules set.');
+  } else text = '<b>Trade Journal</b>\nTest message. Alerts are working.';
+  await sendTelegram(env, chat, text);
+  return { ok: true };
+});
+
+// ------------------------------------------------------------------ weekly / monthly review
+
+function periodRange(q) {
+  if (q.kind === 'month') {
+    const m = /^\d{4}-\d{2}$/.test(q.month || '') ? q.month : bneToday().slice(0, 7);
+    const [from, to] = bneMonthRange(m);
+    return { period: 'month:' + m, from, to, label: m };
+  }
+  let start = /^\d{4}-\d{2}-\d{2}$/.test(q.start || '') ? q.start : bneToday();
+  const wd = new Date(start + 'T00:00:00Z').getUTCDay();
+  start = addDays(start, -((wd + 6) % 7)); // back to Monday
+  return { period: 'week:' + start, from: bneDayStart(start), to: bneDayStart(addDays(start, 7)), label: start };
+}
+
+on('GET', '/review', async ({ db, sample, q }) => {
+  const pr = periodRange(q);
+  const scope = await resolveScope(db, sample, q);
+  const ideas = (await loadIdeas(db, { sample, scope, from: pr.from, to: pr.to, includeOpen: false })).sort((a, b) => a.close_time - b.close_time);
+  const mistakes = Object.fromEntries((await all(db, 'SELECT id, label FROM mistakes')).map((m) => [m.id, m.label]));
+  const byDay = {};
+  for (const i of ideas) {
+    const d = bneDay(i.close_time);
+    const x = (byDay[d] ||= { day: d, net: 0, ideas: 0, wins: 0, losses: 0 });
+    x.net = round(x.net + i.net, 2); x.ideas++; if (i.basisNet > 0) x.wins++; else if (i.basisNet < 0) x.losses++;
+  }
+  const withR = ideas.filter((i) => i.r != null);
+  const withList = ideas.filter((i) => i.checklistTotal > 0);
+  const prepRows = await all(db, `SELECT d.day, SUM(d.checked) AS done, COUNT(*) AS total FROM daily_checks d JOIN strategies s ON s.id = d.strategy_id
+    WHERE s.is_sample = ? AND d.day >= ? AND d.day < ? GROUP BY d.day`, sample, bneDay(pr.from), bneDay(pr.to));
+  const notes = await first(db, 'SELECT * FROM reviews WHERE period = ? AND is_sample = ?', pr.period, sample);
+  const pick = (i) => ({ id: i.id, symbol: i.symbol, direction: i.direction, r: i.r, net: i.net, close_time: i.close_time, strategy_name: i.strategy_name });
+  const mcount = {};
+  for (const i of ideas) for (const m of i.mistakes) mcount[m] = (mcount[m] || 0) + 1;
+  return {
+    ...pr, summary: summary(ideas), days: Object.values(byDay),
+    best: [...withR].sort((a, b) => b.r - a.r).slice(0, 3).map(pick),
+    worst: [...withR].sort((a, b) => a.r - b.r).slice(0, 3).map(pick),
+    unreviewed: ideas.filter((i) => !i.reviewed).length,
+    checklist: { ideas: withList.length, complete: withList.filter((i) => i.checklistDone >= i.checklistTotal).length },
+    prep: { days: prepRows.length, complete: prepRows.filter((r) => r.total > 0 && r.done >= r.total).length },
+    mistakes: Object.entries(mcount).map(([id, n]) => ({ id: Number(id), label: mistakes[id] || 'Mistake', count: n })).sort((a, b) => b.count - a.count),
+    bySymbol: groupSummary(ideas, (i) => i.symbol), byStrategy: groupSummary(ideas, (i) => i.strategy_name || 'No strategy'),
+    notes: notes || null,
+  };
+});
+
+on('PUT', '/review', async ({ db, request, sample }) => {
+  const b = await request.json();
+  if (!/^(week:\d{4}-\d{2}-\d{2}|month:\d{4}-\d{2})$/.test(b.period || '')) throw new HttpError(400, 'Bad period');
+  const rating = b.rating == null || b.rating === '' ? null : Number(b.rating);
+  if (rating != null && !(rating >= 1 && rating <= 5)) throw new HttpError(400, 'Rating is 1 to 5');
+  await run(db, `INSERT INTO reviews (period, is_sample, goals, went_well, improve, rating, updated_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT (period, is_sample) DO UPDATE SET goals = excluded.goals, went_well = excluded.went_well, improve = excluded.improve,
+    rating = excluded.rating, updated_at = excluded.updated_at`,
+    b.period, sample, txt(b.goals, 5000), txt(b.went_well, 5000), txt(b.improve, 5000), rating, Date.now());
+  return { ok: true };
+});
+
+// ------------------------------------------------------------------ import an MT5 statement
+
+on('POST', '/accounts/:id/import', async ({ db, params, request, sample }) => {
+  if (sample) throw new HttpError(400, 'Switch to “My data” to import a statement');
+  const acct = await first(db, 'SELECT * FROM accounts WHERE id = ? AND is_sample = 0', id(params.id));
+  if (!acct) throw new HttpError(404, 'Account not found');
+  const b = await request.json();
+  const list = Array.isArray(b.positions) ? b.positions : [];
+  if (!list.length) throw new HttpError(400, 'No positions to import');
+  if (list.length > 5000) throw new HttpError(400, 'Up to 5,000 positions per import; split the statement');
+  const offset = Math.round((Number(b.offset_hours) || 0) * 3600);
+  const mode = b.tz_mode === 'fixed' ? 'fixed' : 'auto';
+
+  // skip positions the connector already sent (real deals)
+  const have = new Set((await all(db, 'SELECT DISTINCT position_id FROM deals WHERE account_id = ? AND ticket > 0', acct.id)).map((r) => r.position_id));
+  const deals = [];
+  let skipped = 0;
+  for (const p of list) {
+    const pos = Number(p.position);
+    if (!Number.isInteger(pos) || pos <= 0 || !p.symbol || !isFinite(p.open_time) || !isFinite(p.close_time)) { skipped++; continue; }
+    if (have.has(pos)) { skipped++; continue; }
+    const long = String(p.type).toLowerCase().startsWith('buy');
+    const vol = Number(p.volume) || 0, op = Number(p.open_price) || 0, cp = Number(p.close_price) || 0, sl = Number(p.sl) || 0;
+    const profit = Number(p.profit) || 0;
+    // money at risk at the S/L, estimated from this trade's own P&L per price unit
+    let risk = null;
+    if (sl > 0 && Math.abs(cp - op) > 0 && profit !== 0 && ((long && sl < op) || (!long && sl > op))) {
+      risk = Math.round(Math.abs(profit) * Math.abs(op - sl) / Math.abs(cp - op) * 100) / 100;
+    }
+    const base = { position: pos, symbol: String(p.symbol).slice(0, 32), volume: vol, magic: 0, reason: 0, fee: 0 };
+    deals.push({ ...base, ticket: -(pos * 2), order: pos, time: Number(p.open_time), type: long ? 0 : 1, entry: 0, price: op, profit: 0,
+      commission: Number(p.commission) || 0, swap: 0, sl, tp: Number(p.tp) || 0, risk, comment: 'imported' });
+    deals.push({ ...base, ticket: -(pos * 2 + 1), order: pos, time: Number(p.close_time), type: long ? 1 : 0, entry: 1, price: cp, profit,
+      commission: 0, swap: Number(p.swap) || 0, sl: 0, tp: 0, risk: null, comment: 'imported' });
+  }
+  const before = await first(db, 'SELECT COUNT(*) AS n FROM ideas WHERE account_id = ?', acct.id);
+  const acctForImport = { ...acct, tz_mode: mode };
+  for (let k = 0; k < deals.length; k += 300) {
+    await processUpload(db, acctForImport, { login: acct.login, offset_sec: offset, deals: deals.slice(k, k + 300), positions: [], positions_complete: false, import: true });
+  }
+  // keep the live balance/equity from the connector (an import doesn't send any)
+  const after = await first(db, 'SELECT COUNT(*) AS n FROM ideas WHERE account_id = ?', acct.id);
+  await audit(db, { actor: 'user', account_id: acct.id, action: 'Statement imported',
+    detail: `${deals.length / 2} positions imported, ${skipped} skipped (already synced or unreadable); server time ${mode === 'fixed' ? 'UTC' + (offset >= 0 ? '+' : '') + offset / 3600 : 'auto (+2/+3)'}` }).run();
+  return { ok: true, imported: deals.length / 2, skipped, ideas: after.n - before.n };
 });

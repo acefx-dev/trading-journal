@@ -6,10 +6,11 @@ import { Strategies } from './pages/strategies.js';
 import { Accounts } from './pages/accounts.js';
 import { Analytics } from './pages/analytics.js';
 import { Settings } from './pages/settings.js';
+import { Review } from './pages/review.js';
 
 const NAV = [
   ['#/', 'Dashboard', 'dash'], ['#/ideas', 'Trade ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'],
-  ['#/strategies', 'Strategies', 'strat'], ['#/accounts', 'Accounts & sync', 'acct'], ['#/analytics', 'Analytics', 'ana'],
+  ['#/strategies', 'Strategies', 'strat'], ['#/review', 'Review', 'review'], ['#/accounts', 'Accounts & sync', 'acct'], ['#/analytics', 'Analytics', 'ana'],
   ['#/settings', 'Settings', 'gear'],
 ];
 const TABS = [['#/', 'Home', 'dash'], ['#/ideas', 'Ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'], ['#/strategies', 'Checklists', 'strat'], ['#/analytics', 'Stats', 'ana']];
@@ -40,6 +41,7 @@ function App() {
   else if (seg[0] === 'accounts') page = html`<${Accounts}/>`;
   else if (seg[0] === 'analytics') page = html`<${Analytics}/>`;
   else if (seg[0] === 'settings') page = html`<${Settings}/>`;
+  else if (seg[0] === 'review') page = html`<${Review}/>`;
   else page = html`<div class="empty">Page not found. <a href="#/">Go to the dashboard</a></div>`;
 
   const active = (href) => (href === '#/' ? path === '/' : path.startsWith(href.slice(1)));

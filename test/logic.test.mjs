@@ -4,7 +4,8 @@ import { bneDay, bneDayStart, serverToUtc, usDst, bneMonthRange, addDays } from 
 import { canonical, coreMatch, parseCopyComment } from '../src/symbols.js';
 import { buildPosition, netOf } from '../src/build.js';
 import { pickIdea, matchMaster } from '../src/grouping.js';
-import { summary, drawdown, rBuckets, behaviour } from '../src/stats.js';
+import { summary, drawdown, rBuckets, behaviour, sessionOf } from '../src/stats.js';
+import { sessionsInBrisbane, tzOffsetMs } from '../public/js/sessions.js';
 
 const ALIASES = { JPN225: 'JP225', JP225: 'JP225', USTEC: 'NAS100', NAS100: 'NAS100', US30: 'US30', XAUUSD: 'XAUUSD' };
 
@@ -157,4 +158,71 @@ test('R buckets and behaviour split', () => {
   assert.equal(b.checklistIncomplete.count, 1);
   assert.equal(b.mistakes[0].label, 'FOMO');
   assert.equal(b.afterLoss.count, 1);
+});
+
+test('sessions follow each market\'s local time (Babypips hours)', () => {
+  // Monday 9 Nov 2026 (northern winter, Sydney summer)
+  const at = (iso) => sessionOf(Date.parse(iso));
+  assert.equal(at('2026-11-09T00:30:00Z'), 'Tokyo');      // 10:30 Brisbane: Tokyo opened 09:00 JST
+  assert.equal(at('2026-11-08T23:30:00Z'), 'Sydney');     // 09:30 Brisbane: Tokyo not open yet
+  assert.equal(at('2026-11-09T08:30:00Z'), 'London');     // 18:30 Brisbane: London 08:00 GMT
+  assert.equal(at('2026-11-09T13:30:00Z'), 'New York');   // 23:30 Brisbane: NY 08:00 EST, overlap -> NY
+  assert.equal(at('2026-07-06T07:30:00Z'), 'London');     // July: London opens 07:00 UTC (BST)
+  assert.equal(at('2026-07-06T12:30:00Z'), 'New York');   // July: NY opens 12:00 UTC (EDT)
+  assert.equal(tzOffsetMs('Asia/Tokyo', Date.parse('2026-11-09T00:00:00Z')), 9 * 3600000);
+  const b = Object.fromEntries(sessionsInBrisbane(Date.parse('2026-11-09T02:00:00Z')).map((x) => [x.name, x.from + '-' + x.to]));
+  assert.equal(b.Tokyo, '10:00-19:00');
+  assert.equal(b['New York'], '23:00-08:00');
+  assert.equal(b.London, '18:00-03:00');
+});
+
+import { propStatus, lastReset } from '../src/prop.js';
+
+test('firm-day reset times', () => {
+  const now = Date.parse('2026-11-09T05:00:00Z');
+  // broker server UTC+2 midnight = 22:00 UTC the day before
+  assert.equal(lastReset(now, { tz: 'server', serverOffsetSec: 7200 }), Date.parse('2026-11-08T22:00:00Z'));
+  assert.equal(lastReset(now, { tz: 'UTC' }), Date.parse('2026-11-09T00:00:00Z'));
+  // 17:00 New York (EST) = 22:00 UTC
+  assert.equal(lastReset(now, { tz: 'America/New_York', time: '17:00' }), Date.parse('2026-11-08T22:00:00Z'));
+  assert.equal(lastReset(now, { tz: 'Australia/Brisbane' }), Date.parse('2026-11-08T14:00:00Z'));
+});
+
+test('prop monitor: daily loss, static and trailing max loss, target', () => {
+  const now = Date.parse('2026-11-09T05:00:00Z');
+  const base = { id: 1, name: 'T', size: 100000, daily_loss_pct: 5, max_loss_pct: 10, max_loss_type: 'static', profit_target_pct: 8,
+    daily_reset_tz: 'UTC', daily_reset_time: '00:00', last_seen: now };
+  const deals = [{ time: Date.parse('2026-11-01T00:00:00Z'), net: 100000 }, { time: Date.parse('2026-11-05T00:00:00Z'), net: 3000 },
+    { time: Date.parse('2026-11-09T02:00:00Z'), net: -1500 }];
+  // balance 101,500 (after -1,500 today); equity 100,500 with an open loss
+  const s = propStatus({ ...base, balance: 101500, equity: 100500 }, deals, [{ time: Date.parse('2026-11-09T00:05:00Z'), balance: 103000, equity: 103400 }], now, 70);
+  const daily = s.rules.find((r) => r.key === 'daily');
+  // start = higher of 103,000 balance / 103,400 equity = 103,400; limit 5% = 5,170; used 2,900
+  assert.equal(daily.limit, 5170); assert.equal(daily.used, 2900); assert.equal(daily.level, 'ok');
+  const max = s.rules.find((r) => r.key === 'max');
+  assert.equal(max.floor, 90000); assert.equal(max.used, 0);
+  assert.equal(s.target.pct, 18.8);
+  // daily limit of the initial size, from balance only: limit 5,000, used 103,000-100,500 = 2,500
+  const s2 = propStatus({ ...base, balance: 101500, equity: 100500, daily_loss_of: 'initial', daily_loss_from: 'balance' }, deals, [], now);
+  assert.equal(s2.rules[0].limit, 5000); assert.equal(s2.rules[0].used, 2500);
+  // trailing: highest balance 103,000 → floor 93,000; equity 97,000 → 6,000 of 10,000 used
+  const s3 = propStatus({ ...base, max_loss_type: 'trailing', balance: 101500, equity: 97000 }, deals, [], now, 70);
+  const m3 = s3.rules.find((r) => r.key === 'max');
+  assert.equal(m3.floor, 93000); assert.equal(m3.used, 6000); assert.equal(m3.level, 'ok');
+  assert.equal(s3.rules.find((r) => r.key === 'daily').level, 'breached'); // lost 6,000 > 5,150 today
+});
+
+import { readFileSync } from 'node:fs';
+import { parseStatement, parseNum } from '../public/js/importer.js';
+
+test('MT5 statement import: UTF-16 HTML report and CSV', () => {
+  const ps = parseStatement(readFileSync(new URL('./fixtures/mt5_report.html', import.meta.url)), 'ReportHistory.html');
+  assert.equal(ps.length, 3, 'orders section is not read as positions');
+  assert.deepEqual(ps[0], { position: 48120931, symbol: 'JPN225', type: 'buy', volume: 1, open_time: Date.UTC(2026, 9, 20, 3, 14, 3),
+    open_price: 50128, sl: 50068, tp: 0, close_time: Date.UTC(2026, 9, 20, 4, 2, 41), close_price: 50236, commission: -0.35, swap: 0, profit: 270 });
+  assert.equal(ps[1].type, 'sell'); assert.equal(ps[1].volume, 2); assert.equal(ps[1].swap, -3.6); // hidden cell skipped
+  assert.equal(ps[2].volume, 1); assert.equal(ps[2].open_price, 21400.5);
+  const csv = parseStatement(readFileSync(new URL('./fixtures/positions.csv', import.meta.url)), 'p.csv');
+  assert.equal(csv.length, 1); assert.equal(csv[0].sl, 1.088); assert.equal(csv[0].profit, 150);
+  assert.equal(parseNum('1 234.56'), 1234.56); assert.equal(parseNum('-1,234.5'), -1234.5);
 });

@@ -36,6 +36,7 @@ export async function handleIngest(request, env) {
     throw new HttpError(403, `This token is for login ${account.login}; the terminal is logged in to ${body.login}.`);
   }
   const result = await processUpload(env.DB, account, body);
+  result.account_id = account.id;
   return result;
 }
 
@@ -69,6 +70,13 @@ export async function processUpload(db, account, body, now = Date.now()) {
     newDeals = await all(db, `SELECT ticket, position_id, type, entry, symbol, volume FROM deals
       WHERE account_id = ? AND imported_at = ? AND ticket IN (SELECT value->>'ticket' FROM json_each(?))`,
       account.id, now, JSON.stringify(deals));
+  }
+
+  // History imported from an MT5 statement uses negative tickets. Once the real deals of such a
+  // position arrive from the connector, the imported ones are dropped so nothing is counted twice.
+  const realPos = [...new Set(newDeals.filter((d) => d.ticket > 0 && d.position_id > 0).map((d) => d.position_id))];
+  if (realPos.length) {
+    await run(db, 'DELETE FROM deals WHERE account_id = ? AND ticket < 0 AND position_id IN (SELECT value FROM json_each(?))', account.id, JSON.stringify(realPos));
   }
 
   // ---- 2. which positions need rebuilding ----
@@ -139,16 +147,16 @@ export async function processUpload(db, account, body, now = Date.now()) {
   const grouped = affected.size ? await groupAccount(db, account, [...affected], now) : { created: 0, joined: 0, linked: 0 };
 
   // ---- 5. account status, snapshot, audit ----
-  const maxServer = deals.reduce((a, d) => Math.max(a, d.server_time || 0), 0);
+  const maxServer = deals.reduce((a, d) => Math.max(a, d.ticket > 0 ? d.server_time || 0 : 0), 0);
   const balance = num(body.balance), equity = num(body.equity);
-  await run(db, `UPDATE accounts SET last_seen = ?, balance = COALESCE(?, balance), equity = COALESCE(?, equity),
+  if (!body.import) await run(db, `UPDATE accounts SET last_seen = ?, balance = COALESCE(?, balance), equity = COALESCE(?, equity),
       server_offset_sec = ?, connector_version = COALESCE(?, connector_version),
       last_deal_msc = MAX(COALESCE(last_deal_msc, 0), ?),
       server = COALESCE(server, ?), broker = COALESCE(broker, ?), currency = COALESCE(?, currency)
     WHERE id = ?`, now, balance, equity, offset, str(body.connector, 16), maxServer,
     str(body.server, 64), str(body.company, 64), str(body.currency, 8), account.id);
 
-  if (balance != null) {
+  if (balance != null && !body.import) {
     const last = await first(db, 'SELECT MAX(time) AS t FROM snapshots WHERE account_id = ?', account.id);
     if (!last || !last.t || now - last.t >= SNAPSHOT_EVERY_MS || newDeals.length) {
       await run(db, 'INSERT OR REPLACE INTO snapshots (account_id, time, balance, equity) VALUES (?,?,?,?)', account.id, now, balance, equity);
@@ -156,7 +164,7 @@ export async function processUpload(db, account, body, now = Date.now()) {
   }
 
   const logs = [];
-  if (newDeals.length) {
+  if (newDeals.length && !body.import) {
     const list = (xs) => xs.length > 8 ? xs.slice(0, 8).join(', ') + ` and ${xs.length - 8} more` : xs.join(', ');
     const closed = list(changed.filter((c) => c.status === 'closed').map((c) => '#' + c.pid));
     const opened = list(changed.filter((c) => c.isNew && c.status === 'open').map((c) => '#' + c.pid));
@@ -171,7 +179,7 @@ export async function processUpload(db, account, body, now = Date.now()) {
   if (body.reconcile && Array.isArray(body.reconcile.tickets)) {
     const from = int(body.reconcile.from), to = int(body.reconcile.to);
     const theirs = new Set(body.reconcile.tickets.map(Number));
-    const ours = await all(db, 'SELECT ticket FROM deals WHERE account_id = ? AND server_time >= ? AND server_time <= ?', account.id, from, to);
+    const ours = await all(db, 'SELECT ticket FROM deals WHERE account_id = ? AND ticket > 0 AND server_time >= ? AND server_time <= ?', account.id, from, to);
     const oursSet = new Set(ours.map((r) => r.ticket));
     missing = [...theirs].filter((t) => !oursSet.has(t)).slice(0, 5000);
     const extra = [...oursSet].filter((t) => !theirs.has(t));
@@ -181,7 +189,7 @@ export async function processUpload(db, account, body, now = Date.now()) {
   }
   if (logs.length) await db.batch(logs);
 
-  const ack = await first(db, 'SELECT MAX(server_time) AS t FROM deals WHERE account_id = ?', account.id);
+  const ack = await first(db, 'SELECT MAX(server_time) AS t FROM deals WHERE account_id = ? AND ticket > 0', account.id);
   return { ok: true, account: account.name, new_deals: newDeals.length, ack_server_msc: (ack && ack.t) || 0, missing, ...grouped };
 }
 
