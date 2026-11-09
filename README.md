@@ -1,4 +1,32 @@
-# Trade Journal — v1.2 (connector 1.01)
+# Trade Journal — v1.3 (connector 1.01)
+
+## Upgrading to v1.3
+
+Nothing to do if automatic deploys are on (below): the push runs the tests, applies migration `0004` and deploys. Otherwise run `npm run db:migrate` then `npm run deploy`. The MT5 connector is unchanged.
+
+**New in v1.3**
+- **New look.** An icon rail replaces the sidebar; hover an icon for its name. On a large desktop (1280 px wide and 720 px tall or more) the Dashboard, Trade ideas, Calendar, Strategies and Accounts pages fit one screen and their panels scroll inside. Smaller screens scroll as before, and phones keep the bottom tabs.
+- **Dashboard.**
+  - Key figures run in one strip across the top, with a short warning in the header when an account is near a prop rule.
+  - The **Economic calendar** is the Myfxbook widget (high impact, 8 currencies). It's shown dark by default; **Light** switches back to Myfxbook's own colours.
+  - The **Accounts** list follows the account selector at the top right, puts the account closest to a limit first, and scrolls when you have many accounts.
+  - **Market sessions** is a 24-hour timeline in Brisbane time with a "now" line and when the next session opens.
+  - **Profit split calculator.** Choose an account and its split and profit since the last payout fill in, or type any amount. You can override the split (80/85/90/100%). The result is in AUD (or NZD) at the European Central Bank's daily USD rate, refreshed every 6 hours; you can type your own rate instead.
+- **One daily preparation list for every strategy.** Your old per-strategy daily lists were merged into one: same labels became one item, and history was kept. Edit it on the Strategies page. Past days stay as they were recorded.
+- **Payouts per account.** Accounts & sync → an account → **Payouts**: profit split %, last payout date and the currency you're paid in. "Profit since payout" counts closed trades after that date.
+- **Trade ideas.** The list (search, status, strategy, period) sits next to the selected idea's review, which has tabs: Review, Positions & accounts, Charts & links and Activity. The arrows step through the list, and "Mark reviewed" is in the header.
+- **Analytics filters.**
+  - Date presets, plus a Filters panel for symbol, market, strategy, session, direction, outcome and mistakes.
+  - Advanced filters: date (all, last N days, since, range), weekday, entry hour, hold time and minimum rating.
+  - Rule compliance: all trades, with violations, or fully compliant. "Only trades that broke any of …" filters by a checklist item left unticked on a reviewed idea.
+  - Save a filter by name; saved filters are kept on the server.
+- **Analytics results.** These follow the filter:
+  - Key figures and a cumulative R or $ curve.
+  - "Patterns in this selection": your strongest and weakest groups with 4 or more ideas.
+  - A weekday × entry-hour map of average R.
+  - A breakdown table you can group by strategy, symbol, market, session, weekday, hour, hold time, side, month or rating.
+  - R distribution, rules followed vs broken, and costliest mistakes.
+- **Strategies.** Each strategy has a playbook (setup, entry, stop loss, exit) and its own per-trade checklist, which you can reorder. Its card shows its last 3 months.
 
 ## Upgrading to v1.2
 
@@ -63,6 +91,8 @@ You (browser / phone) ──(Cloudflare Access login)─────────
 | `test/` | Your PC | Unit tests, connector simulation, screenshot script |
 
 ## What has and hasn't been tested
+
+**v1.3 tested here:** migration `0004` on a database with v1.2 data; the connector simulation, extended with the shared prep list, payouts, playbooks, saved filters and the analytics feed; every page in headless Chrome at 1440×900, 1100 px and phone width with no app errors. **Not tested:** the Myfxbook widget and the live currency rate (my workspace has no outside network), so check both once deployed. If the rate can't be fetched, the calculator asks you for one.
 
 **Tested here** (Linux, Node 22, Wrangler 4 local mode with a local D1 database and local R2):
 - 16 unit tests: Brisbane day boundaries, broker server time → UTC (incl. US daylight saving), symbol names, building positions from deals, grouping rules, copy matching, statistics (`npm test`).

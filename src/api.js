@@ -73,7 +73,8 @@ on('GET', '/bootstrap', async ({ db, sample, user, env }) => {
     all(db, 'SELECT * FROM prop_firms WHERE is_sample = ? ORDER BY name', sample),
     all(db, `SELECT id, firm_id, name, login, server, broker, currency, kind, phase, size, role, master_account_id, daily_loss_pct,
       max_loss_pct, max_loss_type, profit_target_pct, token_hint, last_seen, last_deal_msc, connector_version, server_offset_sec,
-      tz_mode, balance, equity, status, created_at, daily_reset_tz, daily_reset_time, daily_loss_of, daily_loss_from
+      tz_mode, balance, equity, status, created_at, daily_reset_tz, daily_reset_time, daily_loss_of, daily_loss_from,
+      profit_split_pct, last_payout_day, payout_currency
       FROM accounts WHERE is_sample = ? ORDER BY id`, sample),
     all(db, 'SELECT * FROM strategies WHERE is_sample = ? ORDER BY archived, name', sample),
     all(db, 'SELECT * FROM mistakes ORDER BY active DESC, label'),
@@ -83,11 +84,9 @@ on('GET', '/bootstrap', async ({ db, sample, user, env }) => {
   ]);
   const items = await all(db, `SELECT c.* FROM checklist_items c JOIN strategies s ON s.id = c.strategy_id
     WHERE s.is_sample = ? AND c.active = 1 ORDER BY c.sort, c.id`, sample);
-  for (const s of strategies) {
-    s.daily = items.filter((i) => i.strategy_id === s.id && i.kind === 'daily');
-    s.trade = items.filter((i) => i.strategy_id === s.id && i.kind === 'trade');
-  }
-  return { user: user.email, now: Date.now(), today: bneToday(), firms, accounts: accounts.map(maskAccount), strategies, mistakes, aliases,
+  for (const s of strategies) s.trade = items.filter((i) => i.strategy_id === s.id && i.kind === 'trade');
+  const prep = await all(db, 'SELECT id, label, sort FROM prep_items WHERE is_sample = ? AND active = 1 ORDER BY sort, id', sample);
+  return { user: user.email, now: Date.now(), today: bneToday(), firms, accounts: accounts.map(maskAccount), strategies, prep, mistakes, aliases,
     settings: settings.raw, sampleLoaded: sampleCount.n > 0, telegram: !!env.TELEGRAM_BOT_TOKEN };
 });
 
@@ -119,9 +118,16 @@ on('PUT', '/settings', async ({ db, request }) => {
     if (c && !/^-?\d{1,20}$/.test(c)) throw new HttpError(400, 'Telegram chat id is a number');
     ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'telegram_chat_id', c));
   }
+  if (b.saved_filters != null) {
+    if (!Array.isArray(b.saved_filters) || b.saved_filters.length > 40) throw new HttpError(400, 'Up to 40 saved filters');
+    const list = b.saved_filters.map((f) => ({ name: String(f && f.name || '').trim().slice(0, 60), f: f && typeof f.f === 'object' ? f.f : {} })).filter((f) => f.name);
+    const v = JSON.stringify(list);
+    if (v.length > 30000) throw new HttpError(400, 'Saved filters are too large');
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'saved_filters', v));
+  }
   if (b.group_require_overlap != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'group_require_overlap', b.group_require_overlap ? '1' : '0'));
   if (ops.length) {
-    ops.push(audit(db, { actor: 'user', action: 'Grouping settings changed', detail: b }));
+    if (Object.keys(b).some((k) => k !== 'saved_filters')) ops.push(audit(db, { actor: 'user', action: 'Settings changed', detail: b }));
     await db.batch(ops);
   }
   return { ok: true, settings: (await getSettings(db)).raw };
@@ -178,13 +184,16 @@ on('DELETE', '/firms/:id', async ({ db, params }) => {
 
 const ACCOUNT_FIELDS = ['firm_id', 'name', 'login', 'server', 'currency', 'kind', 'phase', 'size', 'role', 'master_account_id',
   'daily_loss_pct', 'max_loss_pct', 'max_loss_type', 'profit_target_pct', 'tz_mode', 'status',
-  'daily_reset_tz', 'daily_reset_time', 'daily_loss_of', 'daily_loss_from'];
+  'daily_reset_tz', 'daily_reset_time', 'daily_loss_of', 'daily_loss_from', 'profit_split_pct', 'last_payout_day', 'payout_currency'];
 const RESET_TZS = ['server', 'UTC', 'America/New_York', 'Europe/London', 'Europe/Prague', 'Australia/Brisbane', 'Australia/Sydney', 'Asia/Dubai', 'Asia/Jerusalem'];
 
 function cleanAccount(b) {
   const o = {};
   for (const k of ACCOUNT_FIELDS) if (k in b) o[k] = b[k] === '' ? null : b[k];
-  for (const k of ['size', 'daily_loss_pct', 'max_loss_pct', 'profit_target_pct']) if (k in o) o[k] = optNum(o[k]);
+  for (const k of ['size', 'daily_loss_pct', 'max_loss_pct', 'profit_target_pct', 'profit_split_pct']) if (k in o) o[k] = optNum(o[k]);
+  if (o.profit_split_pct != null && !(o.profit_split_pct >= 0 && o.profit_split_pct <= 100)) throw new HttpError(400, 'Profit split is 0 to 100%');
+  if (o.last_payout_day != null && !/^\d{4}-\d{2}-\d{2}$/.test(o.last_payout_day)) throw new HttpError(400, 'Last payout date is YYYY-MM-DD');
+  if ('payout_currency' in o && !['AUD', 'NZD', 'USD'].includes(o.payout_currency)) throw new HttpError(400, 'Payout currency is AUD, NZD or USD');
   for (const k of ['firm_id', 'master_account_id']) if (k in o) o[k] = o[k] == null ? null : id(o[k]);
   if (o.role && !['master', 'copy', 'standalone'].includes(o.role)) throw new HttpError(400, 'Bad role');
   if (o.kind && !['challenge', 'funded', 'personal', 'demo'].includes(o.kind)) throw new HttpError(400, 'Bad type');
@@ -280,9 +289,9 @@ on('GET', '/dashboard', async ({ db, sample, q }) => {
   for (const a of accounts) a.prop = props.find((p) => p.account_id === a.id) || null;
   const ddWorst = accounts.reduce((w, a) => (!w || a.drawdown.maxDdPct > w.drawdown.maxDdPct ? a : w), null);
 
-  // today's preparation checklists
-  const strategies = await all(db, 'SELECT id, name FROM strategies WHERE is_sample = ? AND archived = 0 ORDER BY name', sample);
-  const prep = await dailyState(db, strategies.map((s) => s.id), today);
+  // today's preparation (one shared list) and what each account would pay out now
+  const prep = await prepState(db, sample, today);
+  const payouts = await payoutState(db, scope.accounts.filter((a) => a.status === 'active'));
 
   return {
     today, lastDay,
@@ -292,9 +301,9 @@ on('GET', '/dashboard', async ({ db, sample, q }) => {
     stats30: summary(last30),
     drawdown: ddWorst ? { account: ddWorst.name, ...ddWorst.drawdown } : null,
     open: ideas.filter((i) => i.status === 'open'),
-    recent: ideas.slice(0, 8),
+    recent: ideas.filter((i) => i.status === 'closed').slice(0, 25),
     accounts,
-    prep: strategies.map((s) => ({ ...s, ...prep[s.id] })),
+    prep, payouts,
     scopeAll: scope.isAll,
   };
 });
@@ -587,6 +596,9 @@ on('GET', '/calendar', async ({ db, sample, q }) => {
   const [from, to] = bneMonthRange(month);
   const scope = await resolveScope(db, sample, q);
   const ideas = await loadIdeas(db, { sample, scope, from, to, includeOpen: false });
+  const prepRows = await all(db, `SELECT c.day, SUM(c.checked) AS done, COUNT(*) AS total FROM prep_checks c JOIN prep_items p ON p.id = c.item_id
+    WHERE p.is_sample = ? AND c.day >= ? AND c.day < ? GROUP BY c.day`, sample, bneDay(from), bneDay(to));
+  const prep = Object.fromEntries(prepRows.map((r) => [r.day, { done: r.done, total: r.total }]));
   const days = {};
   for (const i of ideas) {
     const d = bneDay(i.close_time);
@@ -599,7 +611,7 @@ on('GET', '/calendar', async ({ db, sample, q }) => {
   const list = Object.values(days);
   const best = list.reduce((b, d) => (!b || d.net > b.net ? d : b), null);
   const worst = list.reduce((b, d) => (!b || d.net < b.net ? d : b), null);
-  return { month, days, summary: summary(ideas), tradingDays: list.length, greenDays: list.filter((d) => d.net > 0).length,
+  return { month, days, prep, summary: summary(ideas), tradingDays: list.length, greenDays: list.filter((d) => d.net > 0).length,
     redDays: list.filter((d) => d.net < 0).length, best, worst };
 });
 
@@ -648,6 +660,29 @@ on('GET', '/analytics', async ({ db, sample, q }) => {
   };
 });
 
+/**
+ * Every closed idea in the scope, in a compact form, so the Analytics page can filter and group
+ * them in the browser (date, symbol, market, strategy, session, weekday, hour, hold time, rules …).
+ */
+on('GET', '/analytics/ideas', async ({ db, sample, q }) => {
+  const scope = await resolveScope(db, sample, q);
+  const ideas = (await loadIdeas(db, { sample, scope, includeOpen: false })).sort((a, b) => a.close_time - b.close_time);
+  const [mistakes, items, saved] = await Promise.all([
+    all(db, 'SELECT id, label FROM mistakes ORDER BY label'),
+    all(db, "SELECT c.id, c.label, c.strategy_id FROM checklist_items c JOIN strategies s ON s.id = c.strategy_id WHERE c.kind = 'trade' AND s.is_sample = ?", sample),
+    first(db, "SELECT value FROM settings WHERE key = 'saved_filters'"),
+  ]);
+  return {
+    ideas: ideas.map((i) => ({
+      id: i.id, open_time: i.open_time, close_time: i.close_time, symbol: i.symbol, direction: i.direction,
+      strategy_id: i.strategy_id, strategy: i.strategy_name || 'No strategy', r: i.r, net: i.net, basisNet: i.basisNet, costs: i.costs,
+      rating: i.rating, mistakes: i.mistakes, reviewed: i.reviewed, positions: i.lead_positions,
+      ckTotal: i.checklistTotal, ckDone: i.checklistDone, missed: i.checklistMissed || [],
+    })),
+    mistakes, rules: items, saved: (() => { try { return JSON.parse(saved?.value || '[]'); } catch { return []; } })(),
+  };
+});
+
 // ------------------------------------------------------------------ strategies & checklists
 
 on('POST', '/strategies', async ({ db, request, sample }) => {
@@ -655,11 +690,12 @@ on('POST', '/strategies', async ({ db, request, sample }) => {
   const name = txt(b.name, 80)?.trim();
   if (!name) throw new HttpError(400, 'Name needed');
   const now = Date.now();
-  const r = await run(db, `INSERT INTO strategies (name, description, instruments, sessions, default_risk_pct, max_ideas_per_day, is_sample, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`, name, txt(b.description), txt(b.instruments, 200), txt(b.sessions, 200), optNum(b.default_risk_pct), optNum(b.max_ideas_per_day), sample, now, now);
+  const r = await run(db, `INSERT INTO strategies (name, description, instruments, sessions, default_risk_pct, max_ideas_per_day, setup, entry_rules, stop_rules, exit_rules,
+    is_sample, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`, name, txt(b.description), txt(b.instruments, 200), txt(b.sessions, 200),
+    optNum(b.default_risk_pct), optNum(b.max_ideas_per_day), txt(b.setup), txt(b.entry_rules), txt(b.stop_rules), txt(b.exit_rules), sample, now, now);
   const sid = r.meta.last_row_id;
   if (b.copy_from) {
-    const items = await all(db, 'SELECT kind, label, sort FROM checklist_items WHERE strategy_id = ? AND active = 1', id(b.copy_from));
+    const items = await all(db, "SELECT kind, label, sort FROM checklist_items WHERE strategy_id = ? AND kind = 'trade' AND active = 1", id(b.copy_from));
     if (items.length) await db.batch(items.map((it) => stmt(db, 'INSERT INTO checklist_items (strategy_id, kind, label, sort, created_at) VALUES (?,?,?,?,?)', sid, it.kind, it.label, it.sort, now)));
   }
   return { ok: true, id: sid };
@@ -667,17 +703,24 @@ on('POST', '/strategies', async ({ db, request, sample }) => {
 
 on('PUT', '/strategies/:id', async ({ db, params, request }) => {
   const b = await request.json();
+  const sid = id(params.id);
+  const cur = await first(db, 'SELECT * FROM strategies WHERE id = ?', sid);
+  if (!cur) throw new HttpError(404, 'Strategy not found');
+  // only the fields sent are changed
+  const keep = (k, n = 2000) => (k in b ? txt(b[k], n) : cur[k]);
+  const keepNum = (k) => (k in b ? optNum(b[k]) : cur[k]);
   await run(db, `UPDATE strategies SET name = COALESCE(?, name), description = ?, instruments = ?, sessions = ?, default_risk_pct = ?,
-    max_ideas_per_day = ?, archived = COALESCE(?, archived), updated_at = ? WHERE id = ?`,
-    txt(b.name, 80), txt(b.description), txt(b.instruments, 200), txt(b.sessions, 200), optNum(b.default_risk_pct), optNum(b.max_ideas_per_day),
-    b.archived == null ? null : b.archived ? 1 : 0, Date.now(), id(params.id));
+    max_ideas_per_day = ?, setup = ?, entry_rules = ?, stop_rules = ?, exit_rules = ?, archived = COALESCE(?, archived), updated_at = ? WHERE id = ?`,
+    txt(b.name, 80), keep('description'), keep('instruments', 200), keep('sessions', 200), keepNum('default_risk_pct'), keepNum('max_ideas_per_day'),
+    keep('setup'), keep('entry_rules'), keep('stop_rules'), keep('exit_rules'),
+    b.archived == null ? null : b.archived ? 1 : 0, Date.now(), sid);
   return { ok: true };
 });
 
 on('DELETE', '/strategies/:id', async ({ db, params }) => {
   const sid = id(params.id);
   const used = await first(db, 'SELECT COUNT(*) AS n FROM ideas WHERE strategy_id = ?', sid);
-  const checks = await first(db, 'SELECT COUNT(*) AS n FROM daily_checks WHERE strategy_id = ?', sid);
+  const checks = await first(db, 'SELECT COUNT(*) AS n FROM trade_checks t JOIN checklist_items c ON c.id = t.item_id WHERE c.strategy_id = ?', sid);
   if (used.n || checks.n) { // keep history: archive instead of deleting
     await run(db, 'UPDATE strategies SET archived = 1, updated_at = ? WHERE id = ?', Date.now(), sid);
     return { ok: true, archived: true };
@@ -689,10 +732,10 @@ on('DELETE', '/strategies/:id', async ({ db, params }) => {
 on('POST', '/strategies/:id/items', async ({ db, params, request }) => {
   const b = await request.json();
   const label = txt(b.label, 200)?.trim();
-  if (!label || !['daily', 'trade'].includes(b.kind)) throw new HttpError(400, 'Label and kind (daily or trade) needed');
+  if (!label) throw new HttpError(400, 'Label needed');
   const sid = id(params.id);
-  const max = await first(db, 'SELECT COALESCE(MAX(sort), 0) AS m FROM checklist_items WHERE strategy_id = ? AND kind = ?', sid, b.kind);
-  const r = await run(db, 'INSERT INTO checklist_items (strategy_id, kind, label, sort, created_at) VALUES (?,?,?,?,?)', sid, b.kind, label, max.m + 1, Date.now());
+  const max = await first(db, "SELECT COALESCE(MAX(sort), 0) AS m FROM checklist_items WHERE strategy_id = ? AND kind = 'trade'", sid);
+  const r = await run(db, "INSERT INTO checklist_items (strategy_id, kind, label, sort, created_at) VALUES (?,'trade',?,?,?)", sid, label, max.m + 1, Date.now());
   return { ok: true, id: r.meta.last_row_id };
 });
 
@@ -705,63 +748,119 @@ on('PUT', '/items/:id', async ({ db, params, request }) => {
 // "Delete" keeps the item for history (past days and past trade reviews still show it).
 on('DELETE', '/items/:id', async ({ db, params }) => { await run(db, 'UPDATE checklist_items SET active = 0 WHERE id = ?', id(params.id)); return { ok: true }; });
 
-async function dailyState(db, strategyIds, day) {
-  if (!strategyIds.length) return {};
-  const ids = JSON.stringify(strategyIds);
+// ------------------------------------------------------------------ daily preparation (one list for every strategy)
+
+async function prepState(db, sample, day) {
   const [items, checks] = await Promise.all([
-    all(db, "SELECT * FROM checklist_items WHERE kind = 'daily' AND active = 1 AND strategy_id IN (SELECT value FROM json_each(?)) ORDER BY sort, id", ids),
-    all(db, 'SELECT * FROM daily_checks WHERE day = ? AND strategy_id IN (SELECT value FROM json_each(?))', day, ids),
+    all(db, 'SELECT id, label FROM prep_items WHERE is_sample = ? AND active = 1 ORDER BY sort, id', sample),
+    all(db, 'SELECT c.item_id, c.checked FROM prep_checks c JOIN prep_items p ON p.id = c.item_id WHERE c.day = ? AND p.is_sample = ?', day, sample),
   ]);
   const checked = new Set(checks.filter((c) => c.checked).map((c) => c.item_id));
-  const out = {};
-  for (const sid of strategyIds) {
-    const its = items.filter((i) => i.strategy_id === sid).map((i) => ({ id: i.id, label: i.label, checked: checked.has(i.id) }));
-    out[sid] = { day, items: its, done: its.filter((i) => i.checked).length, total: its.length };
-  }
-  return out;
+  const its = items.map((i) => ({ id: i.id, label: i.label, checked: checked.has(i.id) }));
+  return { day, items: its, done: its.filter((i) => i.checked).length, total: its.length };
 }
 
-on('GET', '/checklists/daily', async ({ db, sample, q }) => {
+on('GET', '/prep', async ({ db, sample, q }) => {
   const today = bneToday();
   const day = /^\d{4}-\d{2}-\d{2}$/.test(q.day || '') ? q.day : today;
-  const strategies = await all(db, 'SELECT id, name FROM strategies WHERE is_sample = ? AND archived = 0 ORDER BY name', sample);
-  if (day === today) {
-    const st = await dailyState(db, strategies.map((s) => s.id), day);
-    return { day, today, editable: true, strategies: strategies.map((s) => ({ ...s, ...st[s.id] })) };
-  }
+  if (day === today) return { ...(await prepState(db, sample, day)), today, editable: true };
   // a past day: exactly what was recorded that day (labels as they were), read-only
-  const rows = await all(db, 'SELECT * FROM daily_checks WHERE day = ? ORDER BY item_id', day);
-  return { day, today, editable: false, strategies: strategies.map((s) => {
-    const its = rows.filter((r) => r.strategy_id === s.id).map((r) => ({ id: r.item_id, label: r.label, checked: !!r.checked }));
-    return { ...s, items: its, done: its.filter((i) => i.checked).length, total: its.length };
-  }) };
+  const rows = await all(db, `SELECT c.item_id, c.label, c.checked FROM prep_checks c JOIN prep_items p ON p.id = c.item_id
+    WHERE c.day = ? AND p.is_sample = ? ORDER BY p.sort, p.id`, day, sample);
+  const its = rows.map((r) => ({ id: r.item_id, label: r.label, checked: !!r.checked }));
+  return { day, today, editable: false, items: its, done: its.filter((i) => i.checked).length, total: its.length };
 });
 
-on('PUT', '/checklists/daily', async ({ db, request }) => {
+on('PUT', '/prep', async ({ db, request, sample }) => {
   const b = await request.json();
   const today = bneToday();
   if (b.day && b.day !== today) throw new HttpError(409, `Past days are read-only. Today in Brisbane is ${today}.`);
-  const item = await first(db, "SELECT * FROM checklist_items WHERE id = ? AND kind = 'daily' AND active = 1", id(b.item_id));
+  const item = await first(db, 'SELECT * FROM prep_items WHERE id = ? AND is_sample = ? AND active = 1', id(b.item_id), sample);
   if (!item) throw new HttpError(404, 'Checklist item not found');
-  // write today's row for every active item of this strategy, so the day's record is complete
-  const items = await all(db, "SELECT * FROM checklist_items WHERE strategy_id = ? AND kind = 'daily' AND active = 1", item.strategy_id);
+  // write today's row for every active item, so the day's record is complete
+  const items = await all(db, 'SELECT * FROM prep_items WHERE is_sample = ? AND active = 1', sample);
   const now = Date.now();
   await db.batch([
-    ...items.map((it) => stmt(db, 'INSERT OR IGNORE INTO daily_checks (item_id, strategy_id, day, checked, label, checked_at) VALUES (?,?,?,0,?,?)', it.id, it.strategy_id, today, it.label, now)),
-    stmt(db, 'UPDATE daily_checks SET checked = ?, label = ?, checked_at = ? WHERE item_id = ? AND day = ?', b.checked ? 1 : 0, item.label, now, item.id, today),
+    ...items.map((it) => stmt(db, 'INSERT OR IGNORE INTO prep_checks (item_id, day, checked, label, checked_at) VALUES (?,?,0,?,?)', it.id, today, it.label, now)),
+    stmt(db, 'UPDATE prep_checks SET checked = ?, label = ?, checked_at = ? WHERE item_id = ? AND day = ?', b.checked ? 1 : 0, item.label, now, item.id, today),
   ]);
   return { ok: true, day: today };
 });
 
-on('GET', '/checklists/history', async ({ db, sample, q }) => {
+on('POST', '/prep/items', async ({ db, request, sample }) => {
+  const b = await request.json();
+  const label = txt(b.label, 200)?.trim();
+  if (!label) throw new HttpError(400, 'Label needed');
+  const max = await first(db, 'SELECT COALESCE(MAX(sort), 0) AS m FROM prep_items WHERE is_sample = ? AND active = 1', sample);
+  const r = await run(db, 'INSERT INTO prep_items (label, sort, is_sample, created_at) VALUES (?,?,?,?)', label, max.m + 1, sample, Date.now());
+  return { ok: true, id: r.meta.last_row_id };
+});
+
+on('PUT', '/prep/items/:id', async ({ db, params, request, sample }) => {
+  const b = await request.json();
+  await run(db, 'UPDATE prep_items SET label = COALESCE(?, label), sort = COALESCE(?, sort) WHERE id = ? AND is_sample = ?', txt(b.label, 200), optNum(b.sort), id(params.id), sample);
+  return { ok: true };
+});
+
+// "Delete" keeps the item for history (past days still show it).
+on('DELETE', '/prep/items/:id', async ({ db, params, sample }) => {
+  await run(db, 'UPDATE prep_items SET active = 0 WHERE id = ? AND is_sample = ?', id(params.id), sample);
+  return { ok: true };
+});
+
+on('GET', '/prep/history', async ({ db, sample, q }) => {
   const days = Math.min(Number(q.days) || 30, 366);
   const today = bneToday();
   const fromDay = addDays(today, -(days - 1));
-  const rows = await all(db, `SELECT d.strategy_id, d.day, SUM(d.checked) AS done, COUNT(*) AS total FROM daily_checks d
-    JOIN strategies s ON s.id = d.strategy_id WHERE s.is_sample = ? AND d.day >= ? GROUP BY d.strategy_id, d.day`, sample, fromDay);
+  const rows = await all(db, `SELECT c.day, SUM(c.checked) AS done, COUNT(*) AS total FROM prep_checks c JOIN prep_items p ON p.id = c.item_id
+    WHERE p.is_sample = ? AND c.day >= ? GROUP BY c.day`, sample, fromDay);
   const list = [];
   for (let k = 0; k < days; k++) list.push(addDays(fromDay, k));
   return { days: list, rows };
+});
+
+// ------------------------------------------------------------------ payouts
+
+/** Profit each account has made since its last payout (closed trades, after costs). */
+async function payoutState(db, accounts) {
+  if (!accounts.length) return [];
+  const rows = await all(db, `SELECT account_id, close_time, profit + commission + swap + fee AS net FROM positions
+    WHERE status = 'closed' AND account_id IN (SELECT value FROM json_each(?))`, JSON.stringify(accounts.map((a) => a.id)));
+  return accounts.map((a) => {
+    const since = a.last_payout_day ? bneDayStart(addDays(a.last_payout_day, 1)) : 0;
+    const profit = round(rows.filter((r) => r.account_id === a.id && r.close_time >= since).reduce((s, r) => s + r.net, 0), 2);
+    return { id: a.id, name: a.name, kind: a.kind, split: a.profit_split_pct, currency: a.payout_currency || 'AUD',
+      last_payout_day: a.last_payout_day, profit, share: a.profit_split_pct != null ? round(Math.max(0, profit) * a.profit_split_pct / 100, 2) : null };
+  });
+}
+
+/**
+ * USD → AUD / NZD reference rate for the profit split calculator (European Central Bank daily rate
+ * via Frankfurter). Cached for 6 hours. If it can't be fetched the app asks for a rate instead.
+ */
+on('GET', '/fx', async ({ db }) => {
+  const row = await first(db, "SELECT value FROM settings WHERE key = 'fx_cache'");
+  let cache = null;
+  try { cache = row ? JSON.parse(row.value) : null; } catch { cache = null; }
+  if (cache && Date.now() - cache.fetched < 6 * 3600000) return cache;
+  for (const url of ['https://api.frankfurter.dev/v1/latest?base=USD&symbols=AUD,NZD', 'https://api.frankfurter.app/latest?from=USD&to=AUD,NZD']) {
+    try {
+      const r = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (!(j.rates && j.rates.AUD > 0 && j.rates.NZD > 0)) continue;
+      const out = { AUD: j.rates.AUD, NZD: j.rates.NZD, date: j.date, source: 'European Central Bank (via Frankfurter)', fetched: Date.now() };
+      await run(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'fx_cache', JSON.stringify(out));
+      return out;
+    } catch { /* try the next source */ }
+  }
+  if (cache) return { ...cache, stale: true };
+  return { AUD: null, NZD: null, error: 'Live rate unavailable. Enter a rate.' };
+});
+
+on('GET', '/payouts', async ({ db, sample }) => {
+  const accts = await all(db, "SELECT * FROM accounts WHERE is_sample = ? AND status = 'active' ORDER BY id", sample);
+  return { items: await payoutState(db, accts) };
 });
 
 // ------------------------------------------------------------------ sync log / export
@@ -860,8 +959,8 @@ on('GET', '/review', async ({ db, sample, q }) => {
   }
   const withR = ideas.filter((i) => i.r != null);
   const withList = ideas.filter((i) => i.checklistTotal > 0);
-  const prepRows = await all(db, `SELECT d.day, SUM(d.checked) AS done, COUNT(*) AS total FROM daily_checks d JOIN strategies s ON s.id = d.strategy_id
-    WHERE s.is_sample = ? AND d.day >= ? AND d.day < ? GROUP BY d.day`, sample, bneDay(pr.from), bneDay(pr.to));
+  const prepRows = await all(db, `SELECT c.day, SUM(c.checked) AS done, COUNT(*) AS total FROM prep_checks c JOIN prep_items p ON p.id = c.item_id
+    WHERE p.is_sample = ? AND c.day >= ? AND c.day < ? GROUP BY c.day`, sample, bneDay(pr.from), bneDay(pr.to));
   const notes = await first(db, 'SELECT * FROM reviews WHERE period = ? AND is_sample = ?', pr.period, sample);
   const pick = (i) => ({ id: i.id, symbol: i.symbol, direction: i.direction, r: i.r, net: i.net, close_time: i.close_time, strategy_name: i.strategy_name });
   const mcount = {};

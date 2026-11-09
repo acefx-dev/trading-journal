@@ -1,6 +1,6 @@
 import { html, render, useState, useEffect, useStore, setStore, store, api, Icon, fmt, online, toast, reloadBoot } from './lib.js';
 import { Dashboard } from './pages/dashboard.js';
-import { Ideas, IdeaDetail } from './pages/ideas.js';
+import { Ideas } from './pages/ideas.js';
 import { Calendar } from './pages/calendar.js';
 import { Strategies } from './pages/strategies.js';
 import { Accounts } from './pages/accounts.js';
@@ -10,9 +10,10 @@ import { Review } from './pages/review.js';
 
 const NAV = [
   ['#/', 'Dashboard', 'dash'], ['#/ideas', 'Trade ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'],
-  ['#/strategies', 'Strategies', 'strat'], ['#/review', 'Review', 'review'], ['#/accounts', 'Accounts & sync', 'acct'], ['#/analytics', 'Analytics', 'ana'],
-  ['#/settings', 'Settings', 'gear'],
+  ['#/strategies', 'Strategies', 'strat'], ['#/analytics', 'Analytics', 'ana'], ['#/review', 'Review', 'review'], ['#/accounts', 'Accounts & sync', 'acct'],
 ];
+// pages that fit one screen on a large desktop (their panels scroll inside)
+const FIT = ['/', '/ideas', '/calendar', '/strategies', '/accounts'];
 const TABS = [['#/', 'Home', 'dash'], ['#/ideas', 'Ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'], ['#/strategies', 'Checklists', 'strat'], ['#/analytics', 'Stats', 'ana']];
 
 function useRoute() {
@@ -34,8 +35,7 @@ function App() {
   const seg = path.split('/').filter(Boolean);
   let page;
   if (!seg.length) page = html`<${Dashboard}/>`;
-  else if (seg[0] === 'ideas' && seg[1]) page = html`<${IdeaDetail} id=${seg[1]} key=${seg[1]}/>`;
-  else if (seg[0] === 'ideas') page = html`<${Ideas}/>`;
+  else if (seg[0] === 'ideas') page = html`<${Ideas} id=${seg[1] || null}/>`;
   else if (seg[0] === 'calendar') page = html`<${Calendar}/>`;
   else if (seg[0] === 'strategies') page = html`<${Strategies}/>`;
   else if (seg[0] === 'accounts') page = html`<${Accounts}/>`;
@@ -50,27 +50,22 @@ function App() {
   const lastSeen = Math.max(0, ...accts.map((a) => a.last_seen || 0));
   const noData = s.mode === 'live' && !accts.length;
 
+  const fit = FIT.some((f) => (f === '/' ? path === '/' : path.startsWith(f))) && !noData;
   return html`
   ${s.mode === 'sample' && html`<div class="sample-bar"><b>Sample data.</b> Everything you see is made up, kept apart from your real trades.
     <button class="btn sm" onClick=${() => setStore({ mode: 'live' })}>Switch to my real data</button></div>`}
-  <div class="app">
-    <aside class="side">
-      <div class="brand"><div class="logo"><${Icon} name="ana" size=${16}/></div><span>Trade Journal</span></div>
-      <nav class="nav" aria-label="Main">${NAV.map(([href, label, ic]) => html`<a href=${href} class=${active(href) ? 'on' : ''} aria-current=${active(href) ? 'page' : null}><${Icon} name=${ic}/><span>${label}</span></a>`)}</nav>
-      <div class="side-foot">
-        <a href="#/accounts" class="card" style="padding:14px;display:flex;flex-direction:column;gap:8px;color:inherit">
-          <span class="hstack" style="font-size:13px;font-weight:600"><span class="dot" style=${`background:${!accts.length || s.mode === 'sample' ? 'var(--dim)' : on === accts.length ? 'var(--pos)' : on ? 'var(--amber)' : 'var(--neg)'}`}></span>
-            ${s.mode === 'sample' ? 'Sample accounts' : !accts.length ? 'No MT5 accounts yet' : `MT5 connector: ${on} of ${accts.length} online`}</span>
-          <span class="sub">${s.mode === 'sample' ? 'Made-up accounts, not connected' : 'Read-only · last contact ' + fmt.ago(lastSeen)}</span>
-        </a>
-        <div class="seg" role="group" aria-label="Data shown">
-          <button class=${s.mode === 'live' ? 'on' : ''} onClick=${() => setStore({ mode: 'live' })}>My data</button>
-          <button class=${s.mode === 'sample' ? 'on' : ''} onClick=${() => setStore({ mode: 'sample' })}>Sample</button>
-        </div>
-        <div class="sub" style="padding:0 6px;line-height:1.5">Times in Australia/Brisbane · checklists reset 12:00 AM</div>
+  <div class="app" style=${s.mode === 'sample' ? '--bar:33px' : ''}>
+    <nav class="rail" aria-label="Main">
+      <a href="#/" class="logo" aria-label="Trade Journal home" style="color:var(--bg)"><${Icon} name="ana" size=${18}/></a>
+      ${NAV.map(([href, label, ic]) => html`<a href=${href} class=${active(href) ? 'on' : ''} aria-current=${active(href) ? 'page' : null} aria-label=${label}><${Icon} name=${ic} size=${20}/><span class="tip" aria-hidden="true">${label}</span></a>`)}
+      <div class="rail-foot">
+        <a href="#/settings" class=${active('#/settings') ? 'on' : ''} aria-label="Settings"><${Icon} name="gear" size=${20}/><span class="tip" aria-hidden="true">Settings</span></a>
+        <a href="#/accounts" class="rail-mt5" aria-label=${s.mode === 'sample' ? 'Sample accounts' : !accts.length ? 'No MT5 accounts yet' : `MT5 connector: ${on} of ${accts.length} online, last contact ${fmt.ago(lastSeen)}`}>
+          <span class="dot" style=${`background:${!accts.length || s.mode === 'sample' ? 'var(--dim)' : on === accts.length ? 'var(--pos)' : on ? 'var(--amber)' : 'var(--neg)'};box-shadow:0 0 0 3px rgba(61,214,140,.12)`}></span>MT5
+          <span class="tip" aria-hidden="true">${s.mode === 'sample' ? 'Sample accounts' : !accts.length ? 'No MT5 accounts yet' : `MT5: ${on} of ${accts.length} online · ${fmt.ago(lastSeen)}`}</span></a>
       </div>
-    </aside>
-    <main class="content" id="main">${noData && !path.startsWith('/accounts') && !path.startsWith('/settings') ? html`<${Welcome}/>` : page}</main>
+    </nav>
+    <main class=${'content' + (fit ? ' fit' : '')} id="main">${noData && !path.startsWith('/accounts') && !path.startsWith('/settings') ? html`<${Welcome}/>` : page}</main>
   </div>
   <nav class="tabbar" aria-label="Main">${TABS.map(([href, label, ic]) => html`<a href=${href} class=${active(href) ? 'on' : ''}><${Icon} name=${ic} size=${20}/><span>${label}</span></a>`)}</nav>
   ${s.toast && html`<div class=${'toast' + (s.toast.bad ? ' bad' : '')} role="status">${s.toast.msg}</div>`}`;

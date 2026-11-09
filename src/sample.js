@@ -25,17 +25,21 @@ const COPY_NAME = { JP225: 'JPN225', NAS100: 'NAS100', XAUUSD: 'XAUUSD', USDJPY:
 const STRATEGIES = [
   { name: 'Tokyo Range Breakout', description: 'Break of the Asian pre-open range on JP225 after the Tokyo cash open, with up to two adds.',
     instruments: 'JP225', sessions: '09:30 – 12:00 AEST', risk: 0.5, max: 2,
-    daily: ['Economic calendar checked (JPY, USD high-impact)', 'Asian pre-open range marked on JP225', 'Risk Guard Rail: 0.5% per trade, lock level confirmed', 'Trade copier: both Slaves online', 'Max 2 ideas today, written down', 'Rested and focused, no revenge trading'],
+    play: ['Pre-open range (08:00–09:00) is clean and less than 1.2× the 10-day average.', 'Enter on a 5-min close outside the range in the direction of the break.', 'Beyond the opposite side of the range. Never widened.', 'First target the previous day high/low; trail the rest under 5-min swing lows.'],
     trade: ['Price outside the pre-open range', '5-min close beyond the range', 'S/L beyond the opposite side of the range', 'Risk 0.5% or less (Risk Guard Rail)', 'No high-impact news within 15 min', 'Waited for a close before each add'] },
   { name: 'London Liquidity Sweep', description: 'Fade a sweep of the Asian high or low in the first hour of London.',
     instruments: 'XAUUSD, USDJPY', sessions: '17:00 – 19:00 AEST', risk: 0.5, max: 2,
-    daily: ['London open levels marked (Asia high/low)', 'Calendar: GBP, EUR, USD news', 'Copier: both Slaves online'],
+    play: ['Asian range marked; price sweeps the high or low in the first hour of London.', 'Rejection candle closes back inside the Asian range.', 'Beyond the sweep wick plus spread.', 'Target the opposite side of the Asian range; close by 20:00.'],
     trade: ['Asian high/low swept', 'Rejection candle closed back inside', 'S/L beyond the sweep wick', 'Risk 0.5% or less'] },
   { name: 'NY Open Pullback', description: 'First pullback to VWAP after the New York cash open, in the direction of the opening drive.',
     instruments: 'NAS100', sessions: '23:30 – 01:30 AEST', risk: 0.5, max: 2,
-    daily: ['NY open time and news checked', 'Previous day high/low marked'],
+    play: ['Opening drive of more than 0.4% in the first 15 minutes.', 'First pullback that touches VWAP and holds on the 1-min close.', 'Beyond the pullback low or high.', 'Partials at 1R, the rest at the opening drive high or low.'],
     trade: ['Opening drive over 0.4%', 'Pullback to VWAP', 'S/L beyond the pullback low/high', 'Risk 0.5% or less'] },
 ];
+
+// one daily preparation list for every strategy
+const PREP = ['Economic calendar checked (high-impact, all currencies traded)', 'Key levels marked: pre-open range, Asia high/low, previous day high/low',
+  'Risk Guard Rail limits confirmed on every account', 'Trade copier: both Slaves online', 'Max 2 ideas today, written down with the plan', 'Rested and focused · no revenge trading'];
 
 export async function clearSample(db) {
   const ideas = await all(db, 'SELECT id FROM ideas WHERE is_sample = 1');
@@ -46,6 +50,8 @@ export async function clearSample(db) {
     stmt(db, 'DELETE FROM screenshots WHERE idea_id IN (SELECT id FROM ideas WHERE is_sample = 1)'),
     stmt(db, 'DELETE FROM ideas WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM daily_checks WHERE strategy_id IN (SELECT id FROM strategies WHERE is_sample = 1)'),
+    stmt(db, 'DELETE FROM prep_checks WHERE item_id IN (SELECT id FROM prep_items WHERE is_sample = 1)'),
+    stmt(db, 'DELETE FROM prep_items WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM strategies WHERE is_sample = 1'),
     stmt(db, 'UPDATE accounts SET master_account_id = NULL WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM accounts WHERE is_sample = 1'),
@@ -72,16 +78,22 @@ export async function seedSample(db, now = Date.now()) {
     ins(t5, 'The5ers 100K #2', '90001077', 'challenge', 'Phase 1', 100000, 'copy', m.id, 8),
   ]);
   const c1 = cs[0].results[0], c2 = cs[1].results[0];
+  // payouts: funded account paid out 3 weeks ago; challenges get their split once funded
+  await db.batch([
+    stmt(db, 'UPDATE accounts SET profit_split_pct = 80, last_payout_day = ?, payout_currency = ? WHERE id = ?', addDays(bneToday(now), -21), 'AUD', m.id),
+    stmt(db, "UPDATE accounts SET profit_split_pct = 80, payout_currency = 'AUD' WHERE id IN (?, ?)", c1.id, c2.id),
+  ]);
+  await db.batch(PREP.map((l, i) => stmt(db, 'INSERT INTO prep_items (label, sort, is_sample, created_at) VALUES (?,?,1,?)', l, i, t)));
 
   // strategies + checklists
   const stratIds = {};
   for (const s of STRATEGIES) {
-    const r = await db.batch([stmt(db, `INSERT INTO strategies (name, description, instruments, sessions, default_risk_pct, max_ideas_per_day, is_sample, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,1,?,?) RETURNING id`, s.name, s.description, s.instruments, s.sessions, s.risk, s.max, t, t)]);
+    const r = await db.batch([stmt(db, `INSERT INTO strategies (name, description, instruments, sessions, default_risk_pct, max_ideas_per_day,
+      setup, entry_rules, stop_rules, exit_rules, is_sample, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?) RETURNING id`, s.name, s.description, s.instruments, s.sessions, s.risk, s.max, ...s.play, t, t)]);
     const sid = r[0].results[0].id;
     stratIds[s.name] = sid;
-    await db.batch([...s.daily.map((l, i) => stmt(db, "INSERT INTO checklist_items (strategy_id, kind, label, sort, created_at) VALUES (?, 'daily', ?, ?, ?)", sid, l, i, t)),
-      ...s.trade.map((l, i) => stmt(db, "INSERT INTO checklist_items (strategy_id, kind, label, sort, created_at) VALUES (?, 'trade', ?, ?, ?)", sid, l, i, t))]);
+    await db.batch([...s.trade.map((l, i) => stmt(db, "INSERT INTO checklist_items (strategy_id, kind, label, sort, created_at) VALUES (?, 'trade', ?, ?, ?)", sid, l, i, t))]);
   }
 
   // ---- generate trades over the last ~5 weeks of weekdays (Brisbane) ----
@@ -202,13 +214,13 @@ export async function seedSample(db, now = Date.now()) {
     }
   });
   // daily preparation history (last 14 days), today left empty
-  const dailyItems = await all(db, "SELECT c.* FROM checklist_items c JOIN strategies s ON s.id = c.strategy_id WHERE s.is_sample = 1 AND c.kind = 'daily'");
+  const dailyItems = await all(db, 'SELECT * FROM prep_items WHERE is_sample = 1 AND active = 1');
   for (let k = 14; k >= 1; k--) {
     const d = addDays(today, -k);
     const miss = k === 5 || k === 11;
     for (const it of dailyItems) {
       const checked = miss && it.sort >= 3 ? 0 : 1;
-      ops.push(stmt(db, 'INSERT OR REPLACE INTO daily_checks (item_id, strategy_id, day, checked, label, checked_at) VALUES (?,?,?,?,?,?)', it.id, it.strategy_id, d, checked, it.label, bneDayStart(d) + 8 * 3600000));
+      ops.push(stmt(db, 'INSERT OR REPLACE INTO prep_checks (item_id, day, checked, label, checked_at) VALUES (?,?,?,?,?)', it.id, d, checked, it.label, bneDayStart(d) + 8 * 3600000));
     }
   }
   for (let k = 0; k < ops.length; k += 90) await db.batch(ops.slice(k, k + 90));

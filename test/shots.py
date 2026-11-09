@@ -11,7 +11,7 @@ mobile = os.environ.get('MOBILE') == '1'
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path='/usr/bin/google-chrome', args=['--no-sandbox'])
     W = int(os.environ.get('WIDTH', '1440'))
-    ctx = b.new_context(viewport={'width': 390, 'height': 844} if mobile else {'width': W, 'height': 1000}, device_scale_factor=1)
+    ctx = b.new_context(viewport={'width': 390, 'height': 844} if mobile else {'width': W, 'height': int(os.environ.get('HEIGHT', '1000'))}, device_scale_factor=1)
     page = ctx.new_page()
     errors = []
     page.on('console', lambda m: errors.append(f'[{m.type}] {m.text}') if m.type in ('error', 'warning') else None)

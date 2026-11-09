@@ -1,82 +1,161 @@
-import { html, useState, useStore, useData, api, fmt, cls, Loading, PageHead, Icon, Modal, toast, reloadBoot, roleLabel, kindLabel, online, store } from '../lib.js';
+import { html, useState, useEffect, useStore, useData, api, fmt, cls, sgn, Bar, Loading, PageHead, Icon, Modal, toast, reloadBoot, roleLabel, kindLabel, online, store } from '../lib.js';
 import { SampleEmpty, PropBars } from './dashboard.js';
 import { parseStatement } from '../importer.js';
+
+const GROUPS = [['active', 'Active'], ['funded', 'Funded'], ['challenge', 'Challenge'], ['other', 'Personal / demo'], ['archived', 'Archived']];
+const inGroup = (a, g) => (g === 'active' ? a.status === 'active' : g === 'archived' ? a.status === 'archived'
+  : g === 'other' ? a.status === 'active' && (a.kind === 'personal' || a.kind === 'demo') : a.status === 'active' && a.kind === g);
+const maxPct = (p) => (p && p.rules && p.rules.length ? Math.max(...p.rules.map((r) => r.pct)) : -1);
 
 export function Accounts() {
   const s = useStore();
   const b = s.boot;
   const [edit, setEdit] = useState(null);   // account object or {} for new
-  const [firmEdit, setFirmEdit] = useState(null);
+  const [firms, setFirms] = useState(false);
   const [connect, setConnect] = useState(null);
   const [importing, setImporting] = useState(null);
+  const [grp, setGrp] = useState('active');
+  const [sel, setSel] = useState(null);
   const prop = useData(() => api('/prop?acct=all&firm=all&archived=1'), [b.now]);
-  const groups = [...b.firms.map((f) => ({ firm: f, accts: b.accounts.filter((a) => a.firm_id === f.id) })),
-    { firm: null, accts: b.accounts.filter((a) => !a.firm_id) }].filter((g) => g.firm || g.accts.length);
-  const log = useData(() => api('/sync/log?limit=60'), [b.now]);
-  return html`<${PageHead} title="Accounts & sync" sub="Prop firms, MT5 accounts and the read-only connector" filter=${false}>
-      <button class="btn" onClick=${() => setFirmEdit({})}><${Icon} name="plus" size=${16}/>Prop firm</button>
-      <button class="btn pri" onClick=${() => setEdit({})}><${Icon} name="plus" size=${16}/>MT5 account</button><//>
+  const pay = useData(() => api('/payouts'), [b.now]);
+  const P = (a) => prop.data && prop.data.items.find((x) => x.account_id === a.id);
+  const list = b.accounts.filter((a) => inGroup(a, grp)).sort((x, y) => maxPct(P(y)) - maxPct(P(x)) || x.id - y.id);
+  const cur = b.accounts.find((a) => a.id === sel) || list[0] || b.accounts[0];
+  const firmName = (a) => (b.firms.find((f) => f.id === a.firm_id) || {}).name;
+  return html`<${PageHead} title="Accounts & sync" sub="MT5 accounts, prop rules and payouts" filter=${false}>
+      <button class="btn sm" onClick=${() => setFirms(true)}>Prop firms</button>
+      <button class="btn sm pri" onClick=${() => setEdit({})}><${Icon} name="plus" size=${15}/>Connect account</button><//>
     <${SampleEmpty}/>
-    ${groups.map((g) => html`<section class="card stack" style="gap:14px">
-      <div class="spread"><div><h2 class="h2">${g.firm ? g.firm.name : 'No prop firm'}</h2>
-        <div class="sub" style="margin-top:4px">${g.accts.length} account${g.accts.length === 1 ? '' : 's'}${g.firm && g.firm.website ? html` · <a href=${g.firm.website} target="_blank" rel="noopener noreferrer">${g.firm.website.replace(/^https?:\/\//, '')}</a>` : ''}</div></div>
-        ${g.firm && html`<button class="btn sm" onClick=${() => setFirmEdit(g.firm)}>Edit firm</button>`}</div>
-      ${g.accts.map((a) => html`<${AccountRow} a=${a} all=${b.accounts} p=${prop.data && prop.data.items.find((x) => x.account_id === a.id)}
-        onEdit=${() => setEdit(a)} onConnect=${() => setConnect(a)} onImport=${() => setImporting(a)}/>`)}
-      ${!g.accts.length && html`<div class="sub">No accounts. Add one with “MT5 account”.</div>`}
-    </section>`)}
-    ${!b.accounts.length && !b.firms.length && html`<div class="card stack"><h2 class="h2">Start here</h2>
+    ${!b.accounts.length ? html`<div class="card stack" style="max-width:720px"><h2 class="h2">Start here</h2>
       <ol style="margin:0;padding-left:18px;line-height:1.8"><li>Add your prop firm (optional) and each MT5 account.</li><li>Mark the account you trade on as <b>Master</b> and the copier's Slaves as <b>Copy</b>.</li>
-      <li>Press <b>Connect</b> on each account and follow the steps to install the connector in that terminal.</li></ol></div>`}
-    <div class="row">
-      <section class="card flush" style="flex:2 1 560px">
-        <div class="card-head"><div><h2 class="h2">Sync log</h2><div class="sub" style="margin-top:4px">Every import, retry, check and change. Deals are stored once by their MT5 ticket.</div></div>
-          <button class="btn sm" onClick=${log.reload}><${Icon} name="sync" size=${14}/>Refresh</button></div>
-        <${Loading} state=${log}>${(d) => d.items.length ? html`<div class="scroll"><table class="tbl"><thead><tr><th>Time (AEST)</th><th>Account</th><th>Event</th><th>Details</th></tr></thead>
-          <tbody>${d.items.map((l) => html`<tr><td class="num mut">${fmt.date(l.time)} ${fmt.timeS(l.time)}</td><td>${l.account_name || '—'}</td>
-            <td><span class=${cls('chip', l.level === 'error' ? 'r' : l.level === 'warn' ? 'a' : l.actor === 'connector' ? 'g' : '')}>${l.action}</span></td>
-            <td class="mut" style="white-space:normal;min-width:260px">${l.detail}</td></tr>`)}</tbody></table></div>` : html`<div class="empty">Nothing yet.</div>`}<//>
+      <li>Open the account's <b>MT5 connector</b> tab and follow the steps to install the connector in that terminal.</li></ol>
+      <div class="hstack"><button class="btn pri" onClick=${() => setEdit({})}>Add MT5 account</button><button class="btn" onClick=${() => setFirms(true)}>Add a prop firm</button></div></div>`
+    : html`<div class="acct2 fill">
+      <section class="panel" style="min-height:360px">
+        <div class="ph"><div class="seg2" role="group" aria-label="Group">${GROUPS.map(([k, l]) => html`<button type="button" class=${grp === k ? 'on' : ''} aria-pressed=${grp === k} onClick=${() => setGrp(k)}>${l} <span class="num" style="opacity:.7">${b.accounts.filter((a) => inGroup(a, k)).length}</span></button>`)}</div>
+          <span class="sub">Closest to a limit first</span></div>
+        <div class="gr gh ag" style=${`grid-template-columns:${AGRID}`}><span>Account</span><span class="hide-sm">Group</span><span class="r">Balance</span><span class="hide-sm">Highest rule use</span><span class="r hide-sm">Split</span><span>MT5</span></div>
+        <div class="scrolly">
+          ${list.map((a) => { const p = P(a), m = maxPct(p), on = online(a);
+            return html`<button type="button" class=${cls('gr ag', cur && a.id === cur.id && 'on')} style=${`grid-template-columns:${AGRID};padding:11px 10px`} onClick=${() => setSel(a.id)} aria-current=${cur && a.id === cur.id ? 'true' : null}>
+              <span><b style="display:block;color:var(--text);font-size:13px">${a.name}</b><span class="sub">${firmName(a) || 'No firm'} · ${roleLabel(a)}</span></span>
+              <span class="hide-sm"><span class=${cls('chip', a.kind === 'funded' ? 'b' : a.kind === 'challenge' ? 'a' : '')}>${kindLabel(a.kind)}${a.phase ? ' · ' + a.phase : ''}</span></span>
+              <span class="num r" style="color:var(--text)">${fmt.plain(a.balance)}<span class="sub" style="display:block">${a.size ? 'of ' + fmt.plain(a.size, 0) : ''}</span></span>
+              <span class="hide-sm stack" style="gap:5px">${m >= 0 ? html`<span class="sub num" style=${m >= 70 ? 'color:var(--amber)' : ''}>${Math.round(m)}% · ${(p.rules.find((r) => r.pct === m) || {}).label || ''}</span>
+                <${Bar} pct=${m} color=${m >= 100 ? 'var(--neg)' : m >= 70 ? 'var(--amber)' : 'var(--pos)'}/>` : html`<span class="sub">${p && p.missing ? 'Rules incomplete' : 'No rules set'}</span>`}</span>
+              <span class="num r hide-sm">${a.profit_split_pct != null ? a.profit_split_pct + '%' : '—'}</span>
+              <span>${store.mode === 'sample' ? html`<span class="chip">Sample</span>` : !a.token_hint ? html`<span class="chip">Not set up</span>` : html`<span class=${cls('chip', on ? 'g' : 'a')}>${on ? 'Online' : 'Offline'}</span>`}</span>
+            </button>`; })}
+          ${!list.length && html`<div class="empty">No accounts in this group.</div>`}
+        </div>
+        <div class="sub" style="border-top:1px solid #1B212C;padding:9px 14px">Groups feed the account selector at the top of every page. Set an account's type in Overview → Edit.</div>
       </section>
-      <section class="card stack" style="flex:1 1 340px">
-        <h2 class="h2">How sync works</h2>
-        <ol style="margin:0;padding-left:18px;display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.5;color:var(--text2)">
-          <li>The <b>Trade Journal Connector</b> EA runs in each MT5 terminal. It only reads history, positions and balance; it has no order code.</li>
-          <li>On every trade it uploads within a second or two; otherwise every 15 s with positions open, or every 60 s when flat.</li>
-          <li>Each deal is stored once (by deal ticket); positions are rebuilt from deals, then grouped into ideas. Copies link to the Master by the copier's <span class="num">TC:</span> comment.</li>
-          <li>Once a day it sends the list of every deal ticket for the last 35 days. Anything missing is requested and filled in.</li>
-        </ol>
-        <div class="well hstack" style="align-items:flex-start;flex-wrap:nowrap;font-size:13px;line-height:1.5"><span class="mut"><${Icon} name="lock"/></span>
-          <span>The journal never sends orders. On your trading terminals, “read-only” comes from the connector's code. A broker-enforced guarantee needs a separate terminal logged in with the account's <b>investor password</b>.</span></div>
-      </section>
-    </div>
+      ${cur && html`<section class="panel" style="min-height:360px"><${Detail} key=${cur.id} a=${cur} p=${P(cur)} payout=${pay.data && pay.data.items.find((x) => x.id === cur.id)} firm=${firmName(cur)}
+        onEdit=${() => setEdit(cur)} onConnect=${() => setConnect(cur)} onImport=${() => setImporting(cur)} reloadPay=${pay.reload}/></section>`}
+    </div>`}
     ${edit && html`<${AccountForm} a=${edit} all=${b.accounts} firms=${b.firms} onClose=${() => setEdit(null)}/>`}
-    ${firmEdit && html`<${FirmForm} f=${firmEdit} onClose=${() => setFirmEdit(null)}/>`}
+    ${firms && html`<${Firms} onClose=${() => setFirms(false)}/>`}
     ${connect && html`<${Connect} a=${connect} onClose=${() => setConnect(null)}/>`}
     ${importing && html`<${ImportStatement} a=${importing} onClose=${() => setImporting(null)}/>`}`;
 }
 
-function AccountRow({ a, all, p, onEdit, onConnect, onImport }) {
-  const master = a.master_account_id && all.find((x) => x.id === a.master_account_id);
+const AGRID = 'minmax(0,1.6fr) 120px 118px minmax(0,1fr) 56px 86px';
+const TABS = [['overview', 'Overview'], ['pay', 'Payouts'], ['conn', 'MT5 connector']];
+
+function Detail({ a, p, payout, firm, onEdit, onConnect, onImport, reloadPay }) {
+  const s = useStore();
+  const [tab, setTab] = useState('overview');
+  const master = a.master_account_id && s.boot.accounts.find((x) => x.id === a.master_account_id);
+  const kv = (k, v) => html`<div><div class="cap">${k}</div><div style="font-size:13px;margin-top:4px">${v}</div></div>`;
+  return html`
+    <div style="padding:14px 16px 10px" class="spread">
+      <div style="min-width:0;flex:1"><div class="hstack" style="gap:8px"><h2 style="margin:0;font-size:18px;font-weight:600">${a.name}</h2>
+        <span class=${cls('chip', a.kind === 'funded' ? 'b' : a.kind === 'challenge' ? 'a' : '')}>${kindLabel(a.kind)}</span>${a.status === 'archived' && html`<span class="chip">Archived</span>`}</div>
+        <div class="sub" style="margin-top:4px">${firm || 'No prop firm'} · login ${a.login_masked} · ${roleLabel(a)}${master ? ' of ' + master.name : ''}</div></div>
+      <button class="btn sm" onClick=${onEdit}><${Icon} name="edit" size=${14}/>Edit</button></div>
+    <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}</button>`)}</div>
+    <div class="scrolly" style="padding:16px">
+      ${tab === 'overview' && html`<div class="stack" style="gap:16px">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px">
+          ${kv('Balance', html`<span class="num">${fmt.plain(a.balance)}</span>`)}${kv('Equity', html`<span class="num">${fmt.plain(a.equity)}</span>`)}
+          ${kv('Account size', html`<span class="num">${fmt.plain(a.size, 0)}</span>`)}${kv('Phase', a.phase || '—')}
+          ${kv('Broker server', a.server || '—')}${kv('Currency', a.currency)}</div>
+        <div class="box stack" style="gap:10px">
+          <div class="spread"><span class="cap">Prop rules (warnings only)</span>${p && p.reset && html`<span class="sub">Day reset ${fmt.dt(p.reset)} · next ${fmt.dt(p.nextReset)}</span>`}</div>
+          ${p && (p.rules.length > 0 || p.target || p.missing) ? html`<${PropBars} p=${p} wide/>${p.rules.map((r) => html`<div class="sub">${r.label}: ${r.note}.</div>`)}`
+            : html`<div class="sub">No rules set. Add the firm's daily loss, max loss and target with Edit.</div>`}
+          <div class="sub">Risk Guard Rail and the copier enforce your limits in MT5. The journal only warns.</div></div>
+      </div>`}
+      ${tab === 'pay' && html`<${Payout} a=${a} payout=${payout} reloadPay=${reloadPay}/>`}
+      ${tab === 'conn' && html`<${Connector} a=${a} onConnect=${onConnect} onImport=${onImport}/>`}
+    </div>`;
+}
+
+function Payout({ a, payout, reloadPay }) {
+  const init = { profit_split_pct: a.profit_split_pct ?? '', last_payout_day: a.last_payout_day || '', payout_currency: a.payout_currency || 'AUD' };
+  const [v, setV] = useState(init);
+  const [fx, setFx] = useState(null);
+  useEffect(() => { api('/fx').then(setFx).catch(() => setFx({})); }, []);
+  const dirty = JSON.stringify(v) !== JSON.stringify(init);
+  const save = async (e) => {
+    e.preventDefault();
+    try { await api('/accounts/' + a.id, { method: 'PUT', body: v }); await reloadBoot(); reloadPay(); toast('Payout settings saved'); } catch (err) { toast(err.message, true); }
+  };
+  const profit = payout ? payout.profit : null;
+  const sp = Number(v.profit_split_pct);
+  const share = profit != null && v.profit_split_pct !== '' ? Math.max(0, profit) * sp / 100 : null;
+  const rate = v.payout_currency === 'USD' ? 1 : fx && fx[v.payout_currency];
+  const sym = { AUD: 'A$', NZD: 'NZ$', USD: 'US$' }[v.payout_currency];
+  return html`<form class="stack" style="gap:14px" onSubmit=${save}>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">
+      <div class="field"><label class="lbl" for="psp">Profit split (your share %)</label><input id="psp" class="inp sm num" type="number" min="0" max="100" step="0.5" value=${v.profit_split_pct} onInput=${(e) => setV({ ...v, profit_split_pct: e.target.value })} placeholder="80"/></div>
+      <div class="field"><label class="lbl" for="plp">Last payout date</label><input id="plp" class="inp sm" type="date" value=${v.last_payout_day} onInput=${(e) => setV({ ...v, last_payout_day: e.target.value })}/></div>
+      <div class="field"><label class="lbl" for="pcu">Pay me in</label><select id="pcu" class="inp sm" style="width:100%" value=${v.payout_currency} onChange=${(e) => setV({ ...v, payout_currency: e.target.value })}><option>AUD</option><option>NZD</option><option>USD</option></select></div>
+    </div>
+    <div class="sub">Profit closed after the last payout date counts toward the next payout. Leave the date empty if you haven't been paid yet. Challenge accounts: enter the split you'll get once funded.</div>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">
+      <div class="box"><div class="cap">${v.last_payout_day ? 'Profit since payout' : 'Profit so far'}</div><div class=${cls('num', sgn(profit))} style="font-size:16px;font-weight:600;margin-top:4px">${profit != null ? fmt.money(profit) : '—'}</div><div class="sub">closed trades, after costs</div></div>
+      <div class="box"><div class="cap">Your share</div><div class="num" style="font-size:16px;font-weight:600;margin-top:4px">${share != null ? fmt.plain(share) : '—'}</div><div class="sub">${share != null ? 'Firm keeps ' + fmt.plain(Math.max(0, profit) - share) : 'set a split'}</div></div>
+      <div class="box" style="background:#0F2A1C;border-color:#1D4A32"><div class="cap" style="color:#8FE3B6">You receive</div><div class="num" style="font-size:16px;font-weight:700;margin-top:4px;color:#5BE3A0">${share != null && rate ? sym + (share * rate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</div>
+        <div class="sub" style="color:#8FE3B6">${v.payout_currency === 'USD' ? 'no conversion' : rate ? `@ ${rate.toFixed(4)} · ECB ${fx.date}` : fx ? 'rate unavailable' : 'loading rate…'}</div></div>
+    </div>
+    ${!payout && a.status === 'archived' && html`<div class="sub">Archived accounts aren't counted.</div>`}
+    <div class="hstack"><button class="btn sm pri" type="submit" disabled=${!dirty}>Save payout settings</button>${dirty && html`<button class="btn sm" type="button" onClick=${() => setV(init)}>Undo</button>`}</div>
+    <div class="sub">The dashboard's profit split calculator starts from this split, this currency and this amount.</div>
+  </form>`;
+}
+
+function Connector({ a, onConnect, onImport }) {
+  const s = useStore();
+  const log = useData(() => api('/sync/log?limit=200'), [s.boot.now]);
   const on = online(a);
-  const rules = [a.daily_loss_pct && `Daily ${a.daily_loss_pct}%`, a.max_loss_pct && `Max ${a.max_loss_pct}% ${a.max_loss_type || ''}`, a.profit_target_pct && `Target ${a.profit_target_pct}%`].filter(Boolean).join(' · ');
-  return html`<div class="well" style=${`display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;align-items:center;${a.status === 'archived' ? 'opacity:.6' : ''}`}>
-    <div><div style="font-weight:600">${a.name}</div><div class="sub num" style="margin-top:4px">Login ${a.login_masked}${a.server ? ' · ' + a.server : ''}</div></div>
-    <div class="hstack" style="gap:6px"><span class=${cls('chip', a.kind === 'funded' && 'b')}>${kindLabel(a.kind)}${a.phase ? ' · ' + a.phase : ''}</span>
-      <span class="chip">${roleLabel(a)}${master ? ' of ' + master.name : ''}</span>${a.status === 'archived' && html`<span class="chip">Archived</span>`}</div>
-    <div><div class="lbl">Size · balance</div><div class="num" style="font-size:13px;margin-top:4px">${fmt.plain(a.size, 0)} · ${fmt.plain(a.balance)}</div></div>
-    <div><div class="lbl">Rules</div><div style="font-size:13px;margin-top:4px">${rules || '—'}</div></div>
-    <div><div class="lbl">Connector</div><div class="hstack" style="font-size:13px;margin-top:4px;gap:6px">
-      ${store.mode === 'sample' ? html`<span class="mut">Sample account</span>` : !a.token_hint ? html`<span class="dot" style="background:var(--dim)"></span>Not connected`
-        : html`<span class="dot" style=${`background:${on ? 'var(--pos)' : 'var(--amber)'}`}></span>${on ? 'Online' : 'Offline'} · ${fmt.ago(a.last_seen)}`}</div>
-      ${a.connector_version && a.connector_version !== 'sample' && html`<div class="sub">v${a.connector_version}${a.server_offset_sec != null ? ` · server UTC${a.server_offset_sec >= 0 ? '+' : '−'}${Math.abs(a.server_offset_sec / 3600)}` : ''}</div>`}</div>
-    <div class="hstack" style="justify-content:flex-end">${store.mode !== 'sample' && html`<button class=${cls('btn sm', !a.token_hint && 'pri')} onClick=${onConnect}>${a.token_hint ? 'Connection' : 'Connect'}</button>`}
-      ${store.mode !== 'sample' && html`<button class="btn sm" onClick=${onImport} title="Import past trades from an MT5 statement">Import</button>`}
-      <button class="btn sm" onClick=${onEdit}>Edit</button></div>
-    ${p && (p.rules.length > 0 || p.target || p.missing) && html`<div style="grid-column:1 / -1;border-top:1px solid var(--line);padding-top:12px" class="stack">
-      <div class="spread"><span class="lbl">Prop rules (warnings only)</span><span class="sub">Firm day reset ${p.reset ? fmt.dt(p.reset) : '—'} · next ${p.nextReset ? fmt.dt(p.nextReset) : '—'} (Brisbane)</span></div>
-      <${PropBars} p=${p} wide/>
-      ${p.rules.map((r) => html`<div class="sub">${r.label}: ${r.note}.</div>`)}</div>`}
+  if (store.mode === 'sample') return html`<div class="sub">Sample accounts aren't connected to MT5.</div>`;
+  return html`<div class="stack" style="gap:14px">
+    <div class="box hstack" style="flex-wrap:nowrap;gap:10px"><span class="dot" style=${`background:${!a.token_hint ? 'var(--dim)' : on ? 'var(--pos)' : 'var(--amber)'}`}></span>
+      <div style="flex:1"><div style="font-size:13px;font-weight:600">${!a.token_hint ? 'Not connected yet' : on ? 'Online' : 'Offline'}${a.token_hint ? ' · last contact ' + fmt.ago(a.last_seen) : ''}</div>
+        <div class="sub">${a.connector_version ? 'TradeJournalConnector ' + a.connector_version + ' · ' : ''}read-only${a.server_offset_sec != null ? ` · server UTC${a.server_offset_sec >= 0 ? '+' : '−'}${Math.abs(a.server_offset_sec / 3600)}` : ''}${a.token_hint ? ' · token …' + a.token_hint : ''}</div></div></div>
+    <div class="hstack"><button class=${cls('btn sm', !a.token_hint && 'pri')} onClick=${onConnect}>${a.token_hint ? 'Connection details / new token' : 'Connect this account'}</button>
+      <button class="btn sm" onClick=${onImport}>Import MT5 statement</button></div>
+    <div class="field"><span class="cap">Sync log · this account</span>
+      <${Loading} state=${log}>${(d) => { const rows = d.items.filter((l) => l.account_id === a.id).slice(0, 60);
+        return rows.length ? html`<div class="box" style="padding:0 10px">${rows.map((l) => html`<div style="display:grid;grid-template-columns:118px 1fr;gap:10px;padding:8px 0;border-bottom:1px solid #151A22;font-size:12.5px">
+          <span class="num mut">${fmt.date(l.time)} ${fmt.time(l.time)}</span><span><span class=${cls('chip', l.level === 'error' ? 'r' : l.level === 'warn' ? 'a' : l.actor === 'connector' ? 'g' : '')} style="height:20px">${l.action}</span> <span class="mut">${l.detail}</span></span></div>`)}</div>`
+          : html`<div class="sub">Nothing logged for this account yet.</div>`; }}<//></div>
+    <div class="box sub" style="line-height:1.55">The connector EA only reads history, positions and balance; it has no order code. It uploads within a second or two of each trade, every 15 s with positions open and every 60 s when flat,
+      and once a day sends every deal ticket of the last 35 days so anything missed is filled in.</div>
   </div>`;
+}
+
+function Firms({ onClose }) {
+  const s = useStore();
+  const [edit, setEdit] = useState(null);
+  return html`<${Modal} title="Prop firms" onClose=${onClose}>
+    ${s.boot.firms.map((f) => html`<div class="spread" style="border-bottom:1px solid var(--line2);padding:8px 0"><div><b>${f.name}</b><div class="sub">${s.boot.accounts.filter((a) => a.firm_id === f.id).length} accounts${f.website ? ' · ' + f.website.replace(/^https?:\/\//, '') : ''}</div></div>
+      <button class="btn sm" onClick=${() => setEdit(f)}>Edit</button></div>`)}
+    ${!s.boot.firms.length && html`<div class="sub">No firms yet.</div>`}
+    <div><button class="btn pri" onClick=${() => setEdit({})}><${Icon} name="plus" size=${15}/>Add prop firm</button></div>
+    ${edit && html`<${FirmForm} f=${edit} onClose=${() => setEdit(null)}/>`}
+  <//>`;
 }
 
 function FirmForm({ f, onClose }) {
@@ -103,6 +182,7 @@ function AccountForm({ a, all, firms, onClose }) {
     role: a.role || 'standalone', master_account_id: a.master_account_id || '', daily_loss_pct: a.daily_loss_pct ?? 5, max_loss_pct: a.max_loss_pct ?? 10,
     max_loss_type: a.max_loss_type || 'static', profit_target_pct: a.profit_target_pct ?? '', tz_mode: a.tz_mode || 'auto', status: a.status || 'active',
     daily_reset_tz: a.daily_reset_tz || 'server', daily_reset_time: a.daily_reset_time || '00:00', daily_loss_of: a.daily_loss_of || 'start', daily_loss_from: a.daily_loss_from || 'higher',
+    profit_split_pct: a.profit_split_pct ?? '', last_payout_day: a.last_payout_day || '', payout_currency: a.payout_currency || 'AUD',
   }));
   const [v, setV] = useState(init);
   const dirty = JSON.stringify(v) !== JSON.stringify(init);
@@ -146,6 +226,11 @@ function AccountForm({ a, all, firms, onClose }) {
       ${F('arh', 'Daily reset: time', html`<input id="arh" class="inp" type="time" value=${v.daily_reset_time} onInput=${set('daily_reset_time')}/>`)}
       ${F('alo', 'Daily loss limit is a % of', html`<select id="alo" class="inp" style="width:100%" value=${v.daily_loss_of} onChange=${set('daily_loss_of')}><option value="start">The start-of-day amount</option><option value="initial">The initial account size</option></select>`)}
       ${F('alf', 'Daily loss is measured from', html`<select id="alf" class="inp" style="width:100%" value=${v.daily_loss_from} onChange=${set('daily_loss_from')}><option value="higher">The higher of balance and equity at the reset</option><option value="balance">The balance at the reset</option></select>`)}
+    </div>
+    <div class="fields">
+      ${F('aps', 'Profit split (your share %)', html`<input id="aps" class="inp" type="number" min="0" max="100" step="0.5" value=${v.profit_split_pct} onInput=${set('profit_split_pct')} placeholder="80"/>`)}
+      ${F('apd', 'Last payout date', html`<input id="apd" class="inp" type="date" value=${v.last_payout_day} onInput=${set('last_payout_day')}/>`)}
+      ${F('apc', 'Pay me in', html`<select id="apc" class="inp" style="width:100%" value=${v.payout_currency} onChange=${set('payout_currency')}><option>AUD</option><option>NZD</option><option>USD</option></select>`)}
     </div>
     <details><summary class="sub" style="cursor:pointer">Advanced</summary><div class="fields" style="margin-top:12px">
       ${F('az', 'Broker server time', html`<select id="az" class="inp" style="width:100%" value=${v.tz_mode} onChange=${set('tz_mode')}><option value="auto">Auto: UTC+2/+3 follows US daylight saving (most brokers)</option><option value="fixed">Fixed: use the offset as measured</option></select>`)}

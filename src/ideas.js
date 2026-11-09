@@ -66,13 +66,15 @@ export async function loadIdeas(db, { sample, scope, from = 0, to = 8.64e15, inc
     if (agg.status === 'closed' && (agg.close_time < from || agg.close_time >= to)) continue;
     if (agg.status === 'open' && !includeOpen) continue;
     const stratItems = itemsByStrat[idea.strategy_id] || new Set();
-    const done = [...(checksByIdea[idea.id] || [])].filter((id) => stratItems.has(id)).length;
+    const ticked = checksByIdea[idea.id] || new Set();
+    const done = [...ticked].filter((id) => stratItems.has(id)).length;
+    const missed = [...stratItems].filter((id) => !ticked.has(id));
     out.push({
       id: idea.id, symbol: idea.symbol, direction: idea.direction, lead_account_id: idea.account_id, lead_name: idea.lead_name,
       strategy_id: idea.strategy_id, strategy_name: idea.strategy_name, rating: idea.rating, emotion: idea.emotion,
       reviewed: !!idea.reviewed_at, has_notes: !!(idea.notes && idea.notes.trim()),
       screenshots: shotsByIdea[idea.id] || 0, links: linksByIdea[idea.id] || 0,
-      checklistTotal: stratItems.size, checklistDone: done, mistakes: mistByIdea[idea.id] || [],
+      checklistTotal: stratItems.size, checklistDone: done, checklistMissed: missed, mistakes: mistByIdea[idea.id] || [],
       ...agg,
     });
   }

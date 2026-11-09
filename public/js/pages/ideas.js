@@ -1,96 +1,135 @@
 import { html, useState, useEffect, useRef, useStore, useData, api, scopeQs, store, fmt, sgn, cls, Kpi, Money, R, Dir, Loading, PageHead, Seg, Icon, Modal, toast, todayBne } from '../lib.js';
-import { IdeaTable, SampleEmpty } from './dashboard.js';
+import { SampleEmpty } from './dashboard.js';
 
 const addDays = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
 
-export function Ideas() {
+const PERIODS = [['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 3 months'], ['365', 'Last 12 months'], ['all', 'All time']];
+const STATUS = [['all', 'All'], ['open', 'Open'], ['todo', 'To review'], ['done', 'Reviewed']];
+const statusOf = (i) => (i.status === 'open' ? 'open' : i.reviewed ? 'done' : 'todo');
+const narrow = () => window.matchMedia('(max-width: 1279px)').matches;
+
+/** Trade ideas: the list on the left, the selected idea's review on the right (stacked on smaller screens). */
+export function Ideas({ id }) {
   const s = useStore();
-  const [range, setRange] = useState('30');
+  const [range, setRange] = useState('90');
   const [status, setStatus] = useState('all');
-  const [result, setResult] = useState('all');
-  const [review, setReview] = useState('all');
   const [strategy, setStrategy] = useState('');
+  const [q, setQ] = useState('');
   const today = todayBne();
   const from = range === 'all' ? '' : addDays(today, -(Number(range) - 1));
-  const qs = `${scopeQs()}&from=${from}&status=${status === 'all' ? '' : status}&result=${result === 'all' ? '' : result}&review=${review === 'todo' ? 'todo' : ''}&strategy=${strategy}&limit=300`;
+  const qs = `${scopeQs()}&from=${from}&strategy=${strategy}&limit=500`;
   const st = useData(() => api('/ideas?' + qs), [qs]);
-  const strategies = s.boot.strategies;
   const csv = '/api/export/ideas.csv?' + scopeQs() + (s.mode === 'sample' ? '&mode=sample' : '');
-  return html`<${PageHead} title="Trade ideas" sub="Related positions grouped into one idea, with every copy on your other accounts">
-      <a class="btn" href=${csv} download><${Icon} name="dl" size=${16}/><span class="hide-sm">Export CSV</span></a><//>
+  const all = st.data ? st.data.items : [];
+  const mist = Object.fromEntries(s.boot.mistakes.map((m) => [m.id, m.label]));
+  const needle = q.trim().toLowerCase();
+  const base = needle ? all.filter((i) => [i.symbol, i.strategy_name, i.direction, i.lead_name, ...i.mistakes.map((m) => mist[m])].join(' ').toLowerCase().includes(needle)) : all;
+  const list = base.filter((i) => status === 'all' || statusOf(i) === status);
+  const count = (k) => base.filter((i) => k === 'all' || statusOf(i) === k).length;
+  const selId = id ? Number(id) : null;
+  // on a wide screen, open the first idea when none is chosen
+  useEffect(() => { if (!id && list.length && !narrow()) location.replace('#/ideas/' + list[0].id); }, [id, list.length && list[0].id]);
+  const closed = list.filter((i) => i.status === 'closed');
+  const sum = { n: list.length, w: closed.filter((i) => i.basisNet > 0).length, l: closed.filter((i) => i.basisNet < 0).length,
+    r: closed.reduce((a, i) => a + (i.r || 0), 0), net: closed.reduce((a, i) => a + i.net, 0) };
+  const idx = list.findIndex((i) => i.id === selId);
+  const go = (k) => { const n = list[idx + k]; if (n) location.hash = '#/ideas/' + n.id; };
+  const showList = !id || !narrow();
+  return html`<${PageHead} title="Trade ideas" sub=${st.data ? `${base.length} ideas · ${count('todo')} to review · ${count('open')} open` : ''}>
+      <a class="btn sm hide-phone" href=${csv} download><${Icon} name="dl" size=${15}/>CSV</a><//>
     <${SampleEmpty}/>
-    <div class="card stack" style="gap:12px">
-      <div class="hstack" style="gap:12px">
-        <${Seg} label="Period" value=${range} onChange=${setRange} options=${[['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['all', 'All']]}/>
-        <${Seg} label="Status" value=${status} onChange=${setStatus} options=${[['all', 'All'], ['open', 'Open'], ['closed', 'Closed']]}/>
-        <${Seg} label="Result" value=${result} onChange=${setResult} options=${[['all', 'Any result'], ['win', 'Wins'], ['loss', 'Losses']]}/>
-        <${Seg} label="Review" value=${review} onChange=${setReview} options=${[['all', 'All'], ['todo', 'Needs review']]}/>
-        <label class="sr" for="fstrat">Strategy</label>
-        <select id="fstrat" class="inp" value=${strategy} onChange=${(e) => setStrategy(e.target.value)}>
-          <option value="">All strategies</option><option value="none">No strategy</option>
-          ${strategies.map((x) => html`<option value=${x.id}>${x.name}</option>`)}</select>
-      </div>
-    </div>
-    <${Loading} state=${st}>${(d) => html`
-      <section class="kpis">
-        <${Kpi} label="Closed ideas" value=${d.summary.count} sub=${`${d.summary.wins}W · ${d.summary.losses}L${d.total > d.summary.count ? ' · ' + (d.total - d.summary.count) + ' open' : ''}`}/>
-        <${Kpi} label="Net P&L (scope)" value=${fmt.money(d.summary.totalNet)} tone=${sgn(d.summary.totalNet)}/>
-        <${Kpi} label="Win rate" value=${fmt.rate(d.summary.winRate)}/>
-        <${Kpi} label="Expectancy" value=${fmt.r(d.summary.expectancyR)} tone=${sgn(d.summary.expectancyR)} sub=${`${d.summary.rCount} with a known risk`}/>
-        <${Kpi} label="Costs (scope)" value=${fmt.money(d.summary.commission + d.summary.swap + d.summary.fee)} tone=${sgn(d.summary.commission + d.summary.swap + d.summary.fee)}
-          sub=${`Commission ${fmt.money(d.summary.commission)} · swap ${fmt.money(d.summary.swap)} · fees ${fmt.money(d.summary.fee)}`}/>
-      </section>
-      <section class="card flush">${d.items.length ? html`<${IdeaTable} ideas=${d.items} costs/>` : html`<div class="empty">No ideas match these filters.</div>`}
-        ${d.total > d.items.length && html`<div class="sub" style="padding:12px">Showing the latest ${d.items.length} of ${d.total}. Narrow the period to see older ones.</div>`}</section>`}<//>`;
+    <div class="split2 fill">
+      ${showList && html`<section class="panel" style="min-height:420px">
+        <div class="hstack" style="padding:12px 12px 10px;gap:8px">
+          <label class="sr" for="iq">Search ideas</label>
+          <input id="iq" class="inp sm" style="flex:1 1 180px;min-width:150px" placeholder="Search symbol, strategy, mistake" value=${q} onInput=${(e) => setQ(e.target.value)}/>
+          <div class="seg2" role="group" aria-label="Status">${STATUS.map(([k, l]) => html`<button type="button" class=${status === k ? 'on' : ''} aria-pressed=${status === k} onClick=${() => setStatus(k)}>${l} <span class="num" style="opacity:.7">${count(k)}</span></button>`)}</div>
+          <label class="sr" for="istrat">Strategy</label>
+          <select id="istrat" class="inp sm" value=${strategy} onChange=${(e) => setStrategy(e.target.value)}><option value="">All strategies</option><option value="none">No strategy</option>
+            ${s.boot.strategies.map((x) => html`<option value=${x.id}>${x.name}</option>`)}</select>
+          <label class="sr" for="iper">Period</label>
+          <select id="iper" class="inp sm" value=${range} onChange=${(e) => setRange(e.target.value)}>${PERIODS.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
+          <a href="#/analytics" class="btn sm">More filters</a>
+        </div>
+        <div class="gr gh ig" style="grid-template-columns:${GRID}"><span>Opened</span><span>Idea · strategy</span><span class="r">Held</span><span class="r">R</span><span class="r">P&L</span><span class="hide-sm">Rating</span><span>Status</span></div>
+        <div class="scrolly">
+          ${st.error ? html`<div class="warn err" style="margin:12px">${st.error}</div>` : !st.data ? html`<div class="empty">Loading…</div>`
+            : list.map((i) => html`<${Row} i=${i} on=${i.id === selId}/>`)}
+          ${st.data && !list.length && html`<div class="empty">No ideas match. Clear the search or pick another period.</div>`}
+        </div>
+        <div class="sub hstack" style="border-top:1px solid #1B212C;padding:9px 14px;gap:18px">
+          <span><b class="num" style="color:var(--text)">${sum.n}</b> ideas</span><span>Win rate <b class="num" style="color:var(--text)">${sum.w + sum.l ? Math.round(sum.w * 100 / (sum.w + sum.l)) + '%' : '—'}</b></span>
+          <span>Total <b class=${cls('num', sgn(sum.r))}>${fmt.r(sum.r)}</b></span><span>Net <b class=${cls('num', sgn(sum.net))}>${fmt.money(sum.net, 0)}</b></span></div>
+      </section>`}
+      ${id ? html`<section class="panel" style="min-height:420px"><${IdeaPanel} key=${id} id=${id} prev=${idx > 0 ? () => go(-1) : null} next=${idx >= 0 && idx < list.length - 1 ? () => go(1) : null} reloadList=${st.reload}/></section>`
+        : !narrow() && html`<section class="panel"><div class="empty">${st.data && !list.length ? 'Nothing to show.' : 'Choose an idea to review it.'}</div></section>`}
+    </div>`;
 }
 
-// ------------------------------------------------------------------ one idea
+const GRID = '96px minmax(0,1.6fr) 56px 60px 86px 62px 84px';
 
-export function IdeaDetail({ id }) {
+function Row({ i, on }) {
+  const st = statusOf(i);
+  return html`<button type="button" class=${cls('gr ig', on && 'on')} style=${`grid-template-columns:${GRID}`} aria-current=${on ? 'true' : null}
+    onClick=${() => { location.hash = '#/ideas/' + i.id; }}>
+    <span><span style="display:block;font-weight:500;color:var(--text)">${fmt.date(i.open_time)}</span><span class="num sub">${fmt.time(i.open_time)}</span></span>
+    <span><span class="hstack" style="gap:7px;flex-wrap:nowrap"><b style="color:var(--text)">${i.symbol}</b><${Dir} d=${i.direction}/>${i.lead_positions > 1 && html`<span class="sub num">×${i.lead_positions}</span>`}</span>
+      <span class="sub" style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px">${i.strategy_name || 'No strategy'}</span></span>
+    <span class="num r mut">${i.status === 'open' ? 'open' : fmt.dur(i.close_time - i.open_time).replace(' min', 'm').replace(' h ', 'h ')}</span>
+    <span class="r">${i.status === 'open' ? html`<span class="mut">—</span>` : html`<${R} v=${i.r}/>`}</span>
+    <span class="r" style="font-weight:600">${i.status === 'open' ? html`<${Money} v=${i.floating}/>` : html`<${Money} v=${i.net} dec=${0}/>`}</span>
+    <span class="num hide-sm" style="color:var(--amber);letter-spacing:1px">${i.rating ? '★'.repeat(i.rating) + '☆'.repeat(5 - i.rating) : html`<span class="mut">—</span>`}</span>
+    <span><span class=${cls('chip', st === 'open' ? 'b' : st === 'done' ? 'g' : 'a')}>${st === 'open' ? 'Open' : st === 'done' ? 'Reviewed' : 'To review'}</span></span>
+  </button>`;
+}
+
+// ------------------------------------------------------------------ one idea (right-hand panel)
+
+const TABS = [['review', 'Review'], ['pos', 'Positions & accounts'], ['chart', 'Charts & links'], ['log', 'Activity']];
+
+function IdeaPanel({ id, prev, next, reloadList }) {
   const st = useData(() => api('/ideas/' + id), [id]);
-  return html`<nav class="sub hstack" aria-label="Breadcrumb"><a href="#/ideas">Trade ideas</a><${Icon} name="chev" size=${14}/>
-    <span>${st.data ? `${st.data.idea.symbol} ${st.data.idea.direction === 'long' ? 'Long' : 'Short'} · ${fmt.date(st.data.idea.open_time)}` : 'Idea ' + id}</span></nav>
-    <${Loading} state=${st}>${(d) => html`<${Detail} d=${d} reload=${st.reload}/>`}<//>`;
-}
-
-function Detail({ d, reload }) {
-  const s = useStore();
-  const i = d.idea;
+  const [tab, setTab] = useState(() => { try { return sessionStorage.getItem('tj.ideaTab') || 'review'; } catch { return 'review'; } });
+  const pickTab = (t) => { setTab(t); try { sessionStorage.setItem('tj.ideaTab', t); } catch { /* ignore */ } };
+  if (st.error) return html`<div class="warn err" style="margin:14px">${st.error}</div>`;
+  if (!st.data) return html`<div class="empty">Loading…</div>`;
+  const d = st.data, i = d.idea;
+  const reload = () => { st.reload(); reloadList(); };
   const lead = d.positions.filter((p) => p.account_id === i.account_id);
-  const dur = i.close_time ? Math.round((i.close_time - i.open_time) / 60000) : null;
   const leadAcc = i.accounts.find((a) => a.lead) || i.accounts[0];
+  const done = d.checklist.filter((c) => c.checked).length;
+  const toggleReviewed = async () => {
+    try { await api('/ideas/' + i.id, { method: 'PUT', body: { reviewed: !i.reviewed_at } }); toast(i.reviewed_at ? 'Marked as not reviewed' : 'Marked as reviewed'); reload(); } catch (e) { toast(e.message, true); }
+  };
   return html`
-  <header class="spread" style="align-items:flex-start">
-    <div class="stack" style="gap:10px">
-      <div class="hstack" style="gap:12px"><h1 class="h1" style="font-size:26px">${i.symbol} ${i.direction === 'long' ? 'Long' : 'Short'}</h1>
-        <${Dir} d=${i.direction}/>${i.strategy_name && html`<span class="chip">${i.strategy_name}</span>`}
-        ${i.status === 'open' ? html`<span class="chip b">Open</span>` : i.reviewed_at ? html`<span class="chip g">Reviewed</span>` : html`<span class="chip a">Needs review</span>`}
-        ${s.mode === 'sample' && html`<span class="chip a">Sample data</span>`}</div>
-      <div class="sub" style="font-size:13px">${fmt.dateY(i.open_time)} · ${fmt.timeS(i.open_time)} → ${i.close_time ? fmt.timeS(i.close_time) : 'open'} AEST
-        ${dur != null ? ` · ${dur} min` : ''} · ${lead.length} position${lead.length > 1 ? 's' : ''} on ${i.lead_name}${i.accounts.length > 1 ? ` · copied to ${i.accounts.length - 1} account${i.accounts.length > 2 ? 's' : ''}` : ''}</div>
+    <div style="padding:14px 16px 10px;border-bottom:1px solid #1B212C" class="stack">
+      <div class="hstack" style="gap:10px">
+        <a href="#/ideas" class="btn sm ghost show-narrow" aria-label="Back to the list"><${Icon} name="back" size=${15}/></a>
+        <h2 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-.02em">${i.symbol} ${i.direction === 'long' ? 'Long' : 'Short'}</h2>
+        ${i.status === 'open' ? html`<span class="chip b">Open</span>` : i.reviewed_at ? html`<span class="chip g">Reviewed</span>` : html`<span class="chip a">To review</span>`}
+        ${i.strategy_name && html`<span class="chip">${i.strategy_name}</span>`}
+        <div class="hstack" style="margin-left:auto;gap:6px">
+          <button type="button" class="btn sm" aria-label="Newer idea" disabled=${!prev} onClick=${prev}><${Icon} name="back" size=${15}/></button>
+          <button type="button" class="btn sm" aria-label="Older idea" disabled=${!next} onClick=${next}><${Icon} name="chev" size=${15}/></button>
+          ${i.status === 'closed' && html`<button type="button" class=${cls('btn sm', !i.reviewed_at && 'pri')} onClick=${toggleReviewed}>${i.reviewed_at ? 'Reviewed ✓ (undo)' : html`<${Icon} name="check" size=${15}/>Mark reviewed`}</button>`}</div></div>
+      <div class="sub" style="font-size:12.5px">${fmt.dateY(i.open_time)} · ${fmt.time(i.open_time)} → ${i.close_time ? fmt.time(i.close_time) + (fmt.date(i.close_time) !== fmt.date(i.open_time) ? ' next day' : '') + ' AEST · held ' + fmt.dur(i.close_time - i.open_time) : 'still open'}
+        · ${lead.length} position${lead.length > 1 ? 's' : ''} on ${i.lead_name}${i.accounts.length > 1 ? ` · copied to ${i.accounts.length - 1} account${i.accounts.length > 2 ? 's' : ''}` : ''}</div>
     </div>
-    <div class="hstack" style="gap:28px">
-      ${i.accounts.length > 1 && html`<div><div class="lbl">Combined P&L</div><div class="kv"><${Money} v=${i.net}/></div></div>`}
-      <div><div class="lbl">${i.lead_name}</div><div class="kv"><${Money} v=${leadAcc.net}/></div></div>
-      <div><div class="lbl">R (on ${i.lead_name})</div><div class="kv"><${R} v=${leadAcc.r}/></div></div>
-      <div><div class="lbl">Risk at initial S/L</div><div class="kv num">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div></div>
-      <div><div class="lbl">Costs${i.accounts.length > 1 ? ' (all accounts)' : ''}</div><div class=${cls('kv num', sgn(i.costs))}>${fmt.money(i.costs)}</div>
-        <div class="sub num">Gross ${fmt.money(i.gross)} · comm. ${fmt.money(i.commission)} · swap ${fmt.money(i.swap)} · fees ${fmt.money(i.fee)}</div></div>
+    <div class="mstrip">
+      <div class="kcell"><div class="cap">${i.accounts.length > 1 ? 'Combined P&L' : 'Net P&L'}</div><div class=${cls('num', sgn(i.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.net)}</div><div class="sub">${i.status === 'open' ? 'floating' : 'after costs'}</div></div>
+      <div class="kcell"><div class="cap">Result</div><div class=${cls('num', sgn(leadAcc.r))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(leadAcc.r)}</div><div class="sub">${i.lead_name}</div></div>
+      <div class="kcell"><div class="cap">Initial risk</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div><div class="sub">${leadAcc.risk == null ? 'no S/L seen' : 'lead account'}</div></div>
+      <div class="kcell"><div class="cap">Costs</div><div class=${cls('num', sgn(i.costs))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.costs)}</div><div class="sub">comm. · swap · fees</div></div>
+      <div class="kcell"><div class="cap">Checklist</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${d.checklist.length ? done + ' / ' + d.checklist.length : '—'}</div><div class="sub">${!i.strategy_id ? 'no strategy' : d.checklist.length - done ? (d.checklist.length - done) + ' not ticked' : 'all ticked'}</div></div>
     </div>
-  </header>
-  ${leadAcc.risk == null && i.status === 'closed' && html`<div class="warn">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
-  <${Positions} d=${d} reload=${reload}/>
-  <div class="row">
-    <div class="col" style="flex:3 1 560px">
-      <${Executions} i=${i}/>
-      <${Grouping} d=${d} reload=${reload}/>
-      <${Audit} items=${d.audit}/>
-    </div>
-    <div class="col" style="flex:2 1 380px">
-      <${Review} d=${d} reload=${reload}/>
-      <${Chart} d=${d} reload=${reload}/>
-    </div>
-  </div>`;
+    <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => pickTab(k)}>${l}</button>`)}</div>
+    <div class="scrolly tabbody" style="padding:14px 16px 16px">
+      ${leadAcc.risk == null && i.status === 'closed' && html`<div class="warn" style="margin-bottom:12px">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
+      ${tab === 'review' && html`<${Review} d=${d} reload=${reload}/>`}
+      ${tab === 'pos' && html`<div class="stack" style="gap:18px"><${Positions} d=${d} reload=${reload}/><${Executions} i=${i}/><${Grouping} d=${d} reload=${reload}/></div>`}
+      ${tab === 'chart' && html`<${Chart} d=${d} reload=${reload}/>`}
+      ${tab === 'log' && html`<${Audit} items=${d.audit}/>`}
+    </div>`;
 }
 
 function Positions({ d, reload }) {
@@ -199,27 +238,30 @@ function Review({ d, reload }) {
     return () => clearTimeout(t);
   }, [notes, dirty]);
   const done = d.checklist.filter((c) => checks[c.id]).length;
-  return html`<section class="card stack" style="gap:14px">
-    <div class="spread"><h2 class="h2">Review</h2>
-      <button class=${cls('btn sm', !i.reviewed_at && 'pri')} onClick=${async () => { if (await save({ reviewed: !i.reviewed_at }, i.reviewed_at ? 'Marked as not reviewed' : 'Marked as reviewed')) reload(); }}>
-        ${i.reviewed_at ? 'Reviewed ✓ (undo)' : 'Mark reviewed'}</button></div>
-    <div class="field"><label class="lbl" for="rstrat">Strategy</label>
-      <select id="rstrat" class="inp" style="width:100%" value=${i.strategy_id || ''} onChange=${async (e) => { if (await save({ strategy_id: e.target.value || null })) reload(); }}>
-        <option value="">— choose —</option>${s.boot.strategies.filter((x) => !x.archived || x.id === i.strategy_id).map((x) => html`<option value=${x.id}>${x.name}</option>`)}</select></div>
-    ${i.strategy_id ? html`<div class="stack" style="gap:0">
-      <div class="spread"><span class="lbl">Per-trade checklist</span><span class=${cls('chip num', done === d.checklist.length ? 'g' : 'a')}>${done} / ${d.checklist.length}</span></div>
-      ${d.checklist.map((c) => html`<label class="ck"><input type="checkbox" checked=${!!checks[c.id]} onChange=${() => toggleCheck(c)}/><span>${c.label}</span></label>`)}
-      ${!d.checklist.length && html`<div class="sub">This strategy has no per-trade checklist yet.</div>`}</div>` : html`<div class="sub">Choose a strategy to fill in its checklist.</div>`}
-    <div class="field"><span class="lbl">Execution rating</span>
-      <div class="stars" role="group" aria-label="Execution rating">${[1, 2, 3, 4, 5].map((v) => html`<button type="button" class=${v <= (rating || 0) ? 'on' : ''} aria-label=${'Rate ' + v + ' of 5'} aria-pressed=${v === rating}
-        onClick=${async () => { const nv = v === rating ? null : v; setRating(nv); await save({ rating: nv }); }}><${Icon} name="star" size=${22} fill=${v <= (rating || 0)}/></button>`)}</div></div>
-    <div class="field"><label class="lbl" for="emo">How you felt</label>
-      <select id="emo" class="inp" value=${i.emotion || ''} onChange=${(e) => save({ emotion: e.target.value || null })}><option value="">—</option>${EMOTIONS.map((x) => html`<option>${x}</option>`)}</select></div>
-    <div class="field"><span class="lbl">Mistakes</span><div class="hstack" style="gap:6px">
-      ${s.boot.mistakes.filter((m) => m.active || mist.has(m.id)).map((m) => html`<button type="button" class=${cls('chip', mist.has(m.id) ? 'r' : 'off')} aria-pressed=${mist.has(m.id)} onClick=${() => toggleMistake(m.id)}>${m.label}</button>`)}</div></div>
+  return html`<div class="stack" style="gap:14px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
+      <div class="stack" style="gap:10px">
+        <div class="field"><label class="lbl" for="rstrat">Strategy</label>
+          <select id="rstrat" class="inp sm" style="width:100%" value=${i.strategy_id || ''} onChange=${async (e) => { if (await save({ strategy_id: e.target.value || null })) reload(); }}>
+            <option value="">— choose —</option>${s.boot.strategies.filter((x) => !x.archived || x.id === i.strategy_id).map((x) => html`<option value=${x.id}>${x.name}</option>`)}</select></div>
+        ${i.strategy_id ? html`<div class="stack" style="gap:0">
+          <div class="spread"><span class="lbl">Per-trade checklist</span><span class=${cls('chip num', done === d.checklist.length ? 'g' : 'a')}>${done} / ${d.checklist.length}</span></div>
+          <div class="box" style="padding:2px 12px;margin-top:6px">${d.checklist.map((c) => html`<label class="ck" style="min-height:36px;font-size:13px"><input type="checkbox" checked=${!!checks[c.id]} onChange=${() => toggleCheck(c)}/><span>${c.label}</span></label>`)}
+          ${!d.checklist.length && html`<div class="sub" style="padding:8px 0">This strategy has no per-trade checklist yet.</div>`}</div></div>` : html`<div class="sub">Choose a strategy to fill in its checklist.</div>`}
+      </div>
+      <div class="stack" style="gap:14px">
+        <div class="field"><span class="lbl">Execution rating</span>
+          <div class="stars" role="group" aria-label="Execution rating">${[1, 2, 3, 4, 5].map((v) => html`<button type="button" class=${v <= (rating || 0) ? 'on' : ''} aria-label=${'Rate ' + v + ' of 5'} aria-pressed=${v === rating}
+            onClick=${async () => { const nv = v === rating ? null : v; setRating(nv); await save({ rating: nv }); }}><${Icon} name="star" size=${20} fill=${v <= (rating || 0)}/></button>`)}</div></div>
+        <div class="field"><span class="lbl">Mistakes</span><div class="hstack" style="gap:6px">
+          ${s.boot.mistakes.filter((m) => m.active || mist.has(m.id)).map((m) => html`<button type="button" class=${cls('pill', mist.has(m.id) && 'on')} style=${mist.has(m.id) ? 'background:#3A1A1E;border-color:#6A2A31;color:#FF9AA2' : ''} aria-pressed=${mist.has(m.id)} onClick=${() => toggleMistake(m.id)}>${m.label}</button>`)}</div></div>
+        <div class="field"><label class="lbl" for="emo">How you felt</label>
+          <select id="emo" class="inp sm" value=${i.emotion || ''} onChange=${(e) => save({ emotion: e.target.value || null })}><option value="">—</option>${EMOTIONS.map((x) => html`<option>${x}</option>`)}</select></div>
+      </div>
+    </div>
     <div class="field"><label class="lbl" for="notes">Notes ${dirty ? html`<span class="sub">· saving…</span>` : ''}</label>
-      <textarea id="notes" class="inp" value=${notes} onInput=${(e) => { setNotes(e.target.value); setDirty(true); }} placeholder="What did you see? What would you do differently?"></textarea></div>
-  </section>`;
+      <textarea id="notes" class="inp" value=${notes} onInput=${(e) => { setNotes(e.target.value); setDirty(true); }} placeholder="What did you see? What did you do? What would you do differently?"></textarea></div>
+  </div>`;
 }
 
 const TFS = ['M1', 'M3', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1', 'W1', 'MN'];
@@ -260,8 +302,7 @@ function Chart({ d, reload }) {
     return () => document.removeEventListener('paste', onPaste);
   }, [i.id, tfUpload]);
   const sample = store.mode === 'sample';
-  return html`<section class="card stack">
-    <h2 class="h2">Charts</h2>
+  return html`<section class="stack">
     <${Links} d=${d} reload=${reload}/>
     <div class="stack" style="gap:10px;border-top:1px solid var(--line2);padding-top:14px">
       <span class="lbl">Screenshots</span>

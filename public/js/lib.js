@@ -290,12 +290,12 @@ export function ScopeFilter() {
   const b = s.boot;
   if (!b) return null;
   const accounts = b.accounts.filter((a) => a.status === 'active');
-  return html`<div class="hstack">
-    <label class="sr" for="firmf">Prop firm</label>
-    <select id="firmf" class="inp" value=${s.firm} onChange=${(e) => setStore({ firm: e.target.value, acct: 'all' })}>
-      <option value="all">All firms</option>${b.firms.map((f) => html`<option value=${f.id}>${f.name}</option>`)}</select>
+  return html`<div class="hstack" style="gap:6px">
+    ${(b.firms.length > 1 || s.firm !== 'all') && html`<label class="sr" for="firmf">Prop firm</label>
+    <select id="firmf" class="inp sm" value=${s.firm} onChange=${(e) => setStore({ firm: e.target.value, acct: 'all' })}>
+      <option value="all">All firms</option>${b.firms.map((f) => html`<option value=${f.id}>${f.name}</option>`)}</select>`}
     <label class="sr" for="acctf">Account</label>
-    <select id="acctf" class="inp" value=${s.acct} onChange=${(e) => setStore({ acct: e.target.value })}>
+    <select id="acctf" class="inp sm" value=${s.acct} onChange=${(e) => setStore({ acct: e.target.value })}>
       <option value="all">All accounts (combined)</option>
       ${KIND_GROUPS.filter(([k]) => accounts.some((a) => a.kind === k && (s.firm === 'all' || String(a.firm_id) === s.firm)))
         .map(([k, l]) => html`<option value=${'kind:' + k}>${l}</option>`)}
@@ -304,10 +304,27 @@ export function ScopeFilter() {
     </select></div>`;
 }
 
+/** Compact page header: title, a short line, then page actions, data switch, account filter and MT5 status. */
 export function PageHead({ title, sub, children, filter = true }) {
-  return html`<header class="spread" style="align-items:flex-start">
-    <div class="stack" style="gap:4px"><h1 class="h1">${title}</h1>${sub && html`<div class="sub" style="font-size:13px">${sub}</div>`}</div>
-    <div class="hstack"><${SampleChip}/>${children}${filter && html`<${ScopeFilter}/>`}</div></header>`;
+  return html`<header class="top">
+    <div style="display:flex;align-items:baseline;gap:12px;min-width:0;flex-wrap:wrap"><h1>${title}</h1>${sub && html`<span class="sub" style="font-size:12.5px">${sub}</span>`}</div>
+    <div class="hstack" style="margin-left:auto;gap:8px">${children}<${ModeSwitch}/>${filter && html`<${ScopeFilter}/>`}<${ConnChip}/></div></header>`;
+}
+
+export function ModeSwitch() {
+  const s = useStore();
+  return html`<div class="seg2" role="group" aria-label="Data shown">
+    <button type="button" class=${s.mode === 'live' ? 'on' : ''} aria-pressed=${s.mode === 'live'} onClick=${() => setStore({ mode: 'live' })}>My data</button>
+    <button type="button" class=${s.mode === 'sample' ? 'on' : ''} aria-pressed=${s.mode === 'sample'} onClick=${() => setStore({ mode: 'sample' })}>Sample</button></div>`;
+}
+
+export function ConnChip() {
+  const s = useStore();
+  const accts = (s.boot?.accounts || []).filter((a) => a.status === 'active');
+  if (s.mode === 'sample' || !accts.length) return null;
+  const on = accts.filter(online).length;
+  return html`<a href="#/accounts" class=${cls('chip hide-phone', on === accts.length ? 'g' : on ? 'a' : 'r')} title="MT5 connector status">
+    <span class="dot" style=${`background:${on === accts.length ? 'var(--pos)' : on ? 'var(--amber)' : 'var(--neg)'}`}></span>${on}/${accts.length} online</a>`;
 }
 
 export const roleLabel = (a) => (a.role === 'master' ? 'Master' : a.role === 'copy' ? 'Copy' : 'Standalone');

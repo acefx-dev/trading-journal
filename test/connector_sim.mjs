@@ -200,5 +200,35 @@ assert.equal(r.status, 400, 'no imports into sample mode');
 r = await api('POST', '/alerts/test', {});
 assert.equal(r.status, 500); assert.match(r.error, /TELEGRAM_BOT_TOKEN/);
 
+// 19. v1.3: one shared daily prep list, payouts per account, playbooks, saved filters
+const item = await api('POST', '/prep/items', { label: 'Sim prep ' + uniq });
+assert.equal(item.ok, true);
+r = await api('PUT', '/prep', { item_id: item.id, checked: true });
+assert.equal(r.ok, true);
+let prepNow = await api('GET', '/prep');
+assert.ok(prepNow.items.find((x) => x.id === item.id && x.checked), 'prep item ticked today');
+r = await api('PUT', '/prep', { item_id: item.id, checked: true, day: '2020-01-01' });
+assert.equal(r.status, 409, 'past days are read-only');
+r = await api('PUT', `/accounts/${master.id}`, { profit_split_pct: 150 });
+assert.equal(r.status, 400, 'split over 100% rejected');
+r = await api('PUT', `/accounts/${master.id}`, { profit_split_pct: 80, last_payout_day: '2000-01-01', payout_currency: 'NZD' });
+assert.equal(r.ok, true);
+const pays = await api('GET', '/payouts');
+const mp = pays.items.find((x) => x.id === master.id);
+assert.equal(mp.split, 80); assert.equal(mp.currency, 'NZD');
+assert.equal(mp.share, round(Math.max(0, mp.profit) * 0.8), 'share = profit since payout × split');
+const strat = await api('POST', '/strategies', { name: 'Sim strategy ' + uniq, setup: 'S', entry_rules: 'E' });
+await api('PUT', `/strategies/${strat.id}`, { stop_rules: 'X' });
+const boot2 = await api('GET', '/bootstrap');
+const sb = boot2.strategies.find((x) => x.id === strat.id);
+assert.equal(sb.setup, 'S', 'a partial update keeps the other playbook fields'); assert.equal(sb.stop_rules, 'X');
+assert.ok(boot2.prep.find((x) => x.id === item.id), 'shared prep list in bootstrap');
+await api('DELETE', `/prep/items/${item.id}`);
+r = await api('PUT', '/settings', { saved_filters: [{ name: 'Sim', f: { sym: ['JP225'] } }] });
+assert.equal(r.ok, true);
+const an = await api('GET', '/analytics/ideas?acct=all');
+assert.ok(Array.isArray(an.ideas) && an.saved.length === 1 && an.ideas.every((i) => 'missed' in i), 'analytics feed');
+await api('PUT', '/settings', { saved_filters: [] });
+
 console.log('connector simulation: all checks passed');
 function round(x) { return Math.round(x * 100) / 100; }
