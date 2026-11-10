@@ -230,5 +230,28 @@ const an = await api('GET', '/analytics/ideas?acct=all');
 assert.ok(Array.isArray(an.ideas) && an.saved.length === 1 && an.ideas.every((i) => 'missed' in i), 'analytics feed');
 await api('PUT', '/settings', { saved_filters: [] });
 
+// 20. v1.4: read-only share links
+const link = await api('POST', `/accounts/${master.id}/shares`, { label: 'Mentor view', show_money: false, show_notes: true });
+assert.match(link.url, /\/share\/sh_[0-9a-f]{48}$/);
+const pub = async (path) => { const res = await fetch(BASE + path); return { status: res.status, body: await res.json().catch(() => null), headers: res.headers }; };
+let shr = await pub(`/share/api/${link.token}`);
+assert.equal(shr.status, 200); assert.equal(shr.body.account.label, 'Mentor view');
+assert.equal(shr.headers.get('referrer-policy'), 'no-referrer');
+const raw = JSON.stringify(shr.body);
+assert.ok(!/"(net|totalNet|balance|equity|floating|used|amount)"/.test(raw), 'no dollar figures when dollars are hidden');
+assert.ok(!raw.includes(String(master.login || 'zzz')) && !raw.includes('token_hint'), 'no login or token');
+await api('PUT', `/shares/${link.id}`, { show_money: true });
+shr = await pub(`/share/api/${link.token}`);
+assert.ok('totalNet' in shr.body.stats, 'dollars back when turned on');
+await api('PUT', `/shares/${link.id}`, { active: false });
+assert.equal((await pub(`/share/api/${link.token}`)).status, 410, 'turned off');
+await api('PUT', `/shares/${link.id}`, { active: true, expires_days: 1 });
+assert.equal((await pub(`/share/api/${link.token}`)).status, 200, 'back on');
+assert.equal((await pub('/share/api/sh_' + '0'.repeat(48))).status, 404, 'unknown token');
+assert.equal((await fetch(BASE + `/share/api/${link.token}`, { method: 'POST' })).status, 405, 'read-only');
+assert.equal((await pub(`/share/api/${link.token}/shot/999999`)).status, 404, 'only this account\'s screenshots');
+await api('DELETE', `/shares/${link.id}`);
+assert.equal((await pub(`/share/api/${link.token}`)).status, 404, 'deleted');
+
 console.log('connector simulation: all checks passed');
 function round(x) { return Math.round(x * 100) / 100; }

@@ -60,7 +60,7 @@ export function Accounts() {
 }
 
 const AGRID = 'minmax(0,1.6fr) 120px 118px minmax(0,1fr) 56px 86px';
-const TABS = [['overview', 'Overview'], ['pay', 'Payouts'], ['conn', 'MT5 connector']];
+const TABS = [['overview', 'Overview'], ['pay', 'Payouts'], ['share', 'Share'], ['conn', 'MT5 connector']];
 
 function Detail({ a, p, payout, firm, onEdit, onConnect, onImport, reloadPay }) {
   const s = useStore();
@@ -87,6 +87,7 @@ function Detail({ a, p, payout, firm, onEdit, onConnect, onImport, reloadPay }) 
           <div class="sub">Risk Guard Rail and the copier enforce your limits in MT5. The journal only warns.</div></div>
       </div>`}
       ${tab === 'pay' && html`<${Payout} a=${a} payout=${payout} reloadPay=${reloadPay}/>`}
+      ${tab === 'share' && html`<${Share} a=${a}/>`}
       ${tab === 'conn' && html`<${Connector} a=${a} onConnect=${onConnect} onImport=${onImport}/>`}
     </div>`;
 }
@@ -143,6 +144,64 @@ function Connector({ a, onConnect, onImport }) {
           : html`<div class="sub">Nothing logged for this account yet.</div>`; }}<//></div>
     <div class="box sub" style="line-height:1.55">The connector EA only reads history, positions and balance; it has no order code. It uploads within a second or two of each trade, every 15 s with positions open and every 60 s when flat,
       and once a day sends every deal ticket of the last 35 days so anything missed is filled in.</div>
+  </div>`;
+}
+
+// ------------------------------------------------------------------ read-only share links
+
+const OPTS = [
+  ['show_money', 'Dollar amounts', 'Balance and P&L in dollars. Off: percentages of account size and R only.'],
+  ['show_trades', 'Trade list', 'Closed trades with symbol, side, times, R and result.'],
+  ['show_notes', 'Notes, screenshots and chart links', 'Your review notes and TradingView links on each trade (needs the trade list).'],
+  ['show_open', 'Open trades', 'Trades that are open right now, with floating result.'],
+  ['show_firm', 'Prop firm and rules', 'Firm name, phase and daily loss / max loss / target progress.'],
+];
+const EXPIRY = [['', 'Never'], ['1', '1 day'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days']];
+
+function Share({ a }) {
+  const st = useData(() => api(`/accounts/${a.id}/shares`), [a.id]);
+  const [form, setForm] = useState(null);
+  const sample = store.mode === 'sample';
+  const copy = async (url) => {
+    try { await navigator.clipboard.writeText(url); toast('Link copied'); }
+    catch { prompt('Copy this link', url); }
+  };
+  const update = async (l, body) => { try { await api('/shares/' + l.id, { method: 'PUT', body }); st.reload(); } catch (e) { toast(e.message, true); } };
+  const remove = async (l) => { if (!confirm(`Delete the link “${l.label}”? Anyone who has it will see “not valid”.`)) return; try { await api('/shares/' + l.id, { method: 'DELETE' }); st.reload(); } catch (e) { toast(e.message, true); } };
+  return html`<div class="stack" style="gap:14px">
+    <div class="spread"><div class="sub" style="max-width:420px">Make a read-only link to this account for a mentor, partner or anyone else. They don't need to sign in, and they can't change anything or see your other accounts.</div>
+      <button class="btn sm pri" onClick=${() => setForm({ label: a.name, show_money: true, show_trades: true, show_notes: false, show_open: false, show_firm: true, expires_days: '' })}><${Icon} name="plus" size=${15}/>New link</button></div>
+    ${sample && html`<div class="warn">This is a sample account. Links work, but they show made-up data.</div>`}
+    ${form && html`<form class="box stack" style="gap:12px" onSubmit=${async (e) => {
+        e.preventDefault();
+        try { const r = await api(`/accounts/${a.id}/shares`, { method: 'POST', body: { ...form, expires_days: form.expires_days || null } }); setForm(null); st.reload(); copy(r.url); }
+        catch (err) { toast(err.message, true); } }}>
+      <div style="display:grid;grid-template-columns:minmax(0,1fr) 140px;gap:10px">
+        <div class="field"><label class="lbl" for="shl">Name shown on the page</label><input id="shl" class="inp sm" value=${form.label} onInput=${(e) => setForm({ ...form, label: e.target.value })} maxlength="80"/></div>
+        <div class="field"><label class="lbl" for="she">Expires after</label><select id="she" class="inp sm" style="width:100%" value=${form.expires_days} onChange=${(e) => setForm({ ...form, expires_days: e.target.value })}>${EXPIRY.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select></div></div>
+      <div class="stack" style="gap:2px"><span class="lbl">Show</span>
+        ${OPTS.map(([k, l, help]) => html`<label class="ck" style="min-height:40px;align-items:flex-start;padding:8px 0"><input type="checkbox" checked=${form[k]} disabled=${k === 'show_notes' && !form.show_trades} onChange=${() => setForm({ ...form, [k]: !form[k] })} style="margin-top:2px"/>
+          <span><span style="font-size:13px">${l}</span><span class="sub" style="display:block">${help}</span></span></label>`)}</div>
+      <div class="hstack"><button class="btn sm pri" type="submit">Create link and copy it</button><button class="btn sm" type="button" onClick=${() => setForm(null)}>Cancel</button></div>
+      <div class="sub">Never shown: your MT5 login, server, connector token, email or any other account.</div>
+    </form>`}
+    <${Loading} state=${st}>${(d) => d.items.length ? html`<div class="stack" style="gap:10px">${d.items.map((l) => html`<div class="box stack" style=${`gap:10px;${l.active ? '' : 'opacity:.65'}`}>
+      <div class="spread"><div class="hstack" style="gap:8px"><b style="font-size:13px">${l.label}</b>
+        ${l.active ? html`<span class="chip g">Active</span>` : l.revoked_at ? html`<span class="chip">Turned off</span>` : html`<span class="chip a">Expired</span>`}
+        <span class="sub">${l.expires_at ? (l.active ? 'expires ' : 'expired ') + fmt.dateY(l.expires_at) : 'no expiry'}</span></div>
+        <span class="sub">${l.views} view${l.views === 1 ? '' : 's'}${l.last_viewed_at ? ' · last ' + fmt.ago(l.last_viewed_at) : ''}</span></div>
+      ${l.active && html`<div class="hstack" style="flex-wrap:nowrap;gap:6px"><label class="sr" for=${'su' + l.id}>Link</label>
+        <input id=${'su' + l.id} class="inp sm num" style="flex:1;min-width:0;font-size:11.5px" readonly value=${l.url} onFocus=${(e) => e.target.select()}/>
+        <button class="btn sm" onClick=${() => copy(l.url)}>Copy</button><a class="btn sm" href=${l.url} target="_blank" rel="noopener">Open</a></div>`}
+      <div class="hstack" style="gap:6px">${OPTS.map(([k, label]) => html`<button type="button" class=${cls('pill', l[k] && 'on')} style="height:26px;font-size:11.5px" aria-pressed=${!!l[k]}
+        title=${l[k] ? 'Shown. Click to hide.' : 'Hidden. Click to show.'} onClick=${() => update(l, { [k]: !l[k] })}>${l[k] ? '✓ ' : ''}${label}</button>`)}</div>
+      <div class="hstack" style="gap:6px">
+        ${l.active ? html`<button class="btn sm" onClick=${() => update(l, { active: false })}>Turn off</button>` : html`<button class="btn sm" onClick=${() => update(l, l.revoked_at ? { active: true } : { expires_days: 30, active: true })}>${l.revoked_at ? 'Turn back on' : 'Extend 30 days'}</button>`}
+        <label class="sr" for=${'sx' + l.id}>Change expiry</label>
+        <select id=${'sx' + l.id} class="inp sm" value="x" onChange=${(e) => e.target.value !== 'x' && update(l, { expires_days: e.target.value || null })}><option value="x">Change expiry…</option>${EXPIRY.map(([v, lb]) => html`<option value=${v}>${v ? lb + ' from now' : 'Never expires'}</option>`)}</select>
+        <button class="btn sm ghost" onClick=${() => remove(l)}><${Icon} name="trash" size=${14}/>Delete</button></div>
+    </div>`)}</div>` : !form && html`<div class="sub">No links yet.</div>`}<//>
+    <div class="sub">Changes apply straight away, including to links already sent. Turning a link off stops it working at once; turning it back on restores the same address.</div>
   </div>`;
 }
 

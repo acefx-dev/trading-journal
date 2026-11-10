@@ -3,6 +3,7 @@
 import { all, first, run, stmt, audit, getSettings, getAliases, sha256Hex, randomToken, HttpError } from './db.js';
 import { requireUser } from './auth.js';
 import { handleIngest, groupAccount, processUpload } from './ingest.js';
+import { newShareToken } from './share.js';
 import { resolveScope, loadIdeas, aggregate } from './ideas.js';
 import { summary, drawdown, groupSummary, rBuckets, behaviour, sessionOf } from './stats.js';
 import { bneDay, bneDayStart, bneToday, addDays, bneMonthRange } from './time.js';
@@ -817,6 +818,55 @@ on('GET', '/prep/history', async ({ db, sample, q }) => {
   const list = [];
   for (let k = 0; k < days; k++) list.push(addDays(fromDay, k));
   return { days: list, rows };
+});
+
+// ------------------------------------------------------------------ read-only share links (one account each)
+
+const SHARE_OPTS = ['show_money', 'show_trades', 'show_notes', 'show_open', 'show_firm'];
+const shareOut = (r, origin) => ({ ...r, url: `${origin}/share/${r.token}`, active: !r.revoked_at && !(r.expires_at && r.expires_at < Date.now()) });
+const expiry = (days) => (days == null || days === '' || Number(days) <= 0 ? null : Date.now() + Math.min(Number(days), 3650) * 864e5);
+
+on('GET', '/accounts/:id/shares', async ({ db, params, request }) => {
+  const rows = await all(db, 'SELECT * FROM share_links WHERE account_id = ? ORDER BY revoked_at IS NOT NULL, id DESC', id(params.id));
+  return { items: rows.map((r) => shareOut(r, new URL(request.url).origin)) };
+});
+
+on('POST', '/accounts/:id/shares', async ({ db, params, request }) => {
+  const b = await request.json();
+  const acct = await first(db, 'SELECT * FROM accounts WHERE id = ?', id(params.id));
+  if (!acct) throw new HttpError(404, 'Account not found');
+  const n = await first(db, 'SELECT COUNT(*) AS n FROM share_links WHERE account_id = ? AND revoked_at IS NULL', acct.id);
+  if (n.n >= 20) throw new HttpError(400, 'Up to 20 active links per account. Turn one off first.');
+  const label = (txt(b.label, 80) || acct.name).trim();
+  const opt = (k, d) => (b[k] == null ? d : b[k] ? 1 : 0);
+  const token = newShareToken(), now = Date.now();
+  const r = await run(db, `INSERT INTO share_links (token, account_id, label, show_money, show_trades, show_notes, show_open, show_firm, expires_at, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`, token, acct.id, label, opt('show_money', 1), opt('show_trades', 1), opt('show_notes', 0), opt('show_open', 0), opt('show_firm', 1), expiry(b.expires_days), now);
+  await audit(db, { actor: 'user', account_id: acct.id, action: 'Share link created', detail: { label, expires_days: b.expires_days || null } }).run();
+  const row = await first(db, 'SELECT * FROM share_links WHERE id = ?', r.meta.last_row_id);
+  return shareOut(row, new URL(request.url).origin);
+});
+
+on('PUT', '/shares/:id', async ({ db, params, request }) => {
+  const b = await request.json();
+  const cur = await first(db, 'SELECT * FROM share_links WHERE id = ?', id(params.id));
+  if (!cur) throw new HttpError(404, 'Link not found');
+  const v = { label: b.label != null ? (txt(b.label, 80) || cur.label).trim() : cur.label };
+  for (const k of SHARE_OPTS) v[k] = b[k] == null ? cur[k] : b[k] ? 1 : 0;
+  v.expires_at = 'expires_days' in b ? expiry(b.expires_days) : cur.expires_at;
+  v.revoked_at = b.active === false ? cur.revoked_at || Date.now() : b.active === true ? null : cur.revoked_at;
+  await run(db, `UPDATE share_links SET label = ?, show_money = ?, show_trades = ?, show_notes = ?, show_open = ?, show_firm = ?, expires_at = ?, revoked_at = ? WHERE id = ?`,
+    v.label, v.show_money, v.show_trades, v.show_notes, v.show_open, v.show_firm, v.expires_at, v.revoked_at, cur.id);
+  if (b.active === false && !cur.revoked_at) await audit(db, { actor: 'user', account_id: cur.account_id, action: 'Share link turned off', detail: { label: cur.label } }).run();
+  return shareOut(await first(db, 'SELECT * FROM share_links WHERE id = ?', cur.id), new URL(request.url).origin);
+});
+
+on('DELETE', '/shares/:id', async ({ db, params }) => {
+  const cur = await first(db, 'SELECT * FROM share_links WHERE id = ?', id(params.id));
+  if (!cur) return { ok: true };
+  await run(db, 'DELETE FROM share_links WHERE id = ?', cur.id);
+  await audit(db, { actor: 'user', account_id: cur.account_id, action: 'Share link deleted', detail: { label: cur.label } }).run();
+  return { ok: true };
 });
 
 // ------------------------------------------------------------------ payouts

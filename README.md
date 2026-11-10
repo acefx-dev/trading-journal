@@ -1,4 +1,32 @@
-# Trade Journal — v1.3 (connector 1.01)
+# Trade Journal — v1.4 (connector 1.01)
+
+## Upgrading to v1.4: read-only share links
+
+The push deploys automatically and adds the `share_links` table (migration `0005`). **One Cloudflare step is needed** so people can open a link without your login:
+
+1. Zero Trust → **Access → Applications → Add an application → Self-hosted.**
+2. Name: `Trade Journal shared pages`. Domain: your site (e.g. `trading-journal-btf.pages.dev`), **Path: `share`**. If you use a custom domain, add it too, also with path `share`.
+3. Policy: action **Bypass**, Include → **Everyone**. Save.
+4. Test it: make a link (below), then open it in a **private/incognito** window. You should see the read-only page, not the Cloudflare login.
+
+Only addresses starting with `/share/` are opened up. Everything else, including the whole `/api/`, still needs your login. A shared page only reads from the one account its link was made for.
+
+**Making a link:** Accounts & sync → pick the account → **Share** → **New link**.
+- **Name shown on the page.** It defaults to the account name; change it if you'd rather not show that.
+- **Expiry:** never, 1, 7, 30 or 90 days.
+- **What to show:**
+  - Dollar amounts. Off means percentages of account size and R only, and no dollar figure is sent to the page at all.
+  - The trade list.
+  - Notes, screenshots and chart links. Off by default.
+  - Open trades. Off by default.
+  - Prop firm name and rule progress.
+- The link is copied straight away. Each link shows its views and when it was last opened.
+- You can change what it shows at any time, and the change applies to links already sent.
+- **Turn off** stops a link at once, and turning it back on restores the same address. **Delete** removes it for good.
+
+**Never shown on a shared page:** your MT5 login and server, connector tokens, your email, other accounts, mistakes, ratings or checklists. Shared pages aren't indexed by search engines and don't pass the link to sites they link to.
+
+Also in v1.4: each trade idea has an **Add screenshot** button in its header, the tab is now called **Screenshots & charts** (with a count), and pasting an image (Ctrl+V) works from any tab of an idea.
 
 ## Upgrading to v1.3
 

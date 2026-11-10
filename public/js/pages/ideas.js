@@ -85,12 +85,23 @@ function Row({ i, on }) {
 
 // ------------------------------------------------------------------ one idea (right-hand panel)
 
-const TABS = [['review', 'Review'], ['pos', 'Positions & accounts'], ['chart', 'Charts & links'], ['log', 'Activity']];
+let pendingPaste = null; // an image pasted on another tab, uploaded once the Screenshots tab opens
+const TABS = [['review', 'Review'], ['chart', 'Screenshots & charts'], ['pos', 'Positions & accounts'], ['log', 'Activity']];
 
 function IdeaPanel({ id, prev, next, reloadList }) {
   const st = useData(() => api('/ideas/' + id), [id]);
   const [tab, setTab] = useState(() => { try { return sessionStorage.getItem('tj.ideaTab') || 'review'; } catch { return 'review'; } });
   const pickTab = (t) => { setTab(t); try { sessionStorage.setItem('tj.ideaTab', t); } catch { /* ignore */ } };
+  useEffect(() => {
+    if (tab === 'chart' || store.mode === 'sample') return;
+    const onPaste = (e) => {
+      const files = e.clipboardData && [...e.clipboardData.files].filter((f) => f.type.startsWith('image/'));
+      if (!files || !files.length || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+      pendingPaste = files; pickTab('chart');
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [tab, id]);
   if (st.error) return html`<div class="warn err" style="margin:14px">${st.error}</div>`;
   if (!st.data) return html`<div class="empty">Loading…</div>`;
   const d = st.data, i = d.idea;
@@ -109,6 +120,7 @@ function IdeaPanel({ id, prev, next, reloadList }) {
         ${i.status === 'open' ? html`<span class="chip b">Open</span>` : i.reviewed_at ? html`<span class="chip g">Reviewed</span>` : html`<span class="chip a">To review</span>`}
         ${i.strategy_name && html`<span class="chip">${i.strategy_name}</span>`}
         <div class="hstack" style="margin-left:auto;gap:6px">
+          ${store.mode !== 'sample' && html`<button type="button" class="btn sm" onClick=${() => { pickTab('chart'); setTimeout(() => document.getElementById('shotfile')?.click(), 50); }}><${Icon} name="img" size=${15}/><span class="hide-sm">Add screenshot</span></button>`}
           <button type="button" class="btn sm" aria-label="Newer idea" disabled=${!prev} onClick=${prev}><${Icon} name="back" size=${15}/></button>
           <button type="button" class="btn sm" aria-label="Older idea" disabled=${!next} onClick=${next}><${Icon} name="chev" size=${15}/></button>
           ${i.status === 'closed' && html`<button type="button" class=${cls('btn sm', !i.reviewed_at && 'pri')} onClick=${toggleReviewed}>${i.reviewed_at ? 'Reviewed ✓ (undo)' : html`<${Icon} name="check" size=${15}/>Mark reviewed`}</button>`}</div></div>
@@ -122,7 +134,7 @@ function IdeaPanel({ id, prev, next, reloadList }) {
       <div class="kcell"><div class="cap">Costs</div><div class=${cls('num', sgn(i.costs))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.costs)}</div><div class="sub">comm. · swap · fees</div></div>
       <div class="kcell"><div class="cap">Checklist</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${d.checklist.length ? done + ' / ' + d.checklist.length : '—'}</div><div class="sub">${!i.strategy_id ? 'no strategy' : d.checklist.length - done ? (d.checklist.length - done) + ' not ticked' : 'all ticked'}</div></div>
     </div>
-    <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => pickTab(k)}>${l}</button>`)}</div>
+    <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => pickTab(k)}>${l}${k === 'chart' && d.screenshots.length + d.links.length > 0 ? html` <span class="chip num" style="height:18px;padding:0 6px;font-size:11px">${d.screenshots.length + d.links.length}</span>` : ''}</button>`)}</div>
     <div class="scrolly tabbody" style="padding:14px 16px 16px">
       ${leadAcc.risk == null && i.status === 'closed' && html`<div class="warn" style="margin-bottom:12px">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
       ${tab === 'review' && html`<${Review} d=${d} reload=${reload}/>`}
@@ -296,24 +308,25 @@ function Chart({ d, reload }) {
     }
     setBusy(false); toast('Screenshot added'); reload();
   };
+  useEffect(() => { if (pendingPaste) { const f = pendingPaste; pendingPaste = null; upload(f); } }, []);
   useEffect(() => {
     const onPaste = (e) => { if (e.clipboardData && e.clipboardData.files.length && !(e.target instanceof HTMLTextAreaElement) && !(e.target instanceof HTMLInputElement)) upload(e.clipboardData.files); };
     document.addEventListener('paste', onPaste);
     return () => document.removeEventListener('paste', onPaste);
   }, [i.id, tfUpload]);
   const sample = store.mode === 'sample';
-  return html`<section class="stack">
-    <${Links} d=${d} reload=${reload}/>
-    <div class="stack" style="gap:10px;border-top:1px solid var(--line2);padding-top:14px">
+  return html`<section class="stack" style="gap:18px">
+    <div class="stack" style="gap:10px">
       <span class="lbl">Screenshots</span>
       ${d.screenshots.length > 0 && html`<div class="shots">${d.screenshots.map((sh) => html`<${Shot} sh=${sh} onOpen=${() => setBig(sh.id)} reload=${reload}/>`)}</div>`}
-      ${sample ? html`<div class="sub">Screenshots are turned off for sample data.</div>` : html`
+      ${sample ? html`<div class="sub">Screenshots are turned off for sample data. Switch to “My data” to add them.</div>` : html`
       <div class="hstack"><label class="lbl" for="tfu">Timeframe for new uploads</label><${TfSelect} id="tfu" value=${tfUpload} onChange=${setTfUpload}/></div>
       <div class=${cls('drop', over && 'over')} onDragOver=${(e) => { e.preventDefault(); setOver(true); }} onDragLeave=${() => setOver(false)}
         onDrop=${(e) => { e.preventDefault(); setOver(false); upload(e.dataTransfer.files); }}>
         ${busy ? 'Uploading…' : html`Drop chart screenshots here, paste one (Ctrl+V), or <button class="btn sm" onClick=${() => fileRef.current.click()}>choose files</button>`}
-        <input ref=${fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange=${(e) => upload(e.target.files)}/></div>`}
+        <input id="shotfile" ref=${fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange=${(e) => upload(e.target.files)}/></div>`}
     </div>
+    <div style="border-top:1px solid var(--line2);padding-top:14px"><${Links} d=${d} reload=${reload}/></div>
     ${big && html`<div class="lightbox" onClick=${() => setBig(null)}><img src=${'/api/screenshots/' + big} alt="Screenshot"/></div>`}
   </section>`;
 }
