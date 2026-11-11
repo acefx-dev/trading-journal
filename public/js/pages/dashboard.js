@@ -59,7 +59,7 @@ function Body({ d, reload }) {
       </section>
       <section class="panel" style="flex:1;min-height:280px">
         <div class="ph"><h2>Recent trading ideas</h2><div class="hstack" style="gap:10px"><span class="sub">${d.open.length} open · ${toReview} to review</span><a href="#/ideas" style="font-size:12px">All ideas</a></div></div>
-        <div class="scrolly" style="padding:0 6px 6px">${ideas.length ? html`<${IdeaTable} ideas=${ideas} compact/>` : html`<div class="empty">No trades yet. They appear here as soon as the MT5 connector sends them.</div>`}</div>
+        <div class="scrolly" style="padding:0 6px 6px;overflow-x:auto">${ideas.length ? html`<${IdeaTable} ideas=${ideas} compact/>` : html`<div class="empty">No trades yet. They appear here as soon as the MT5 connector sends them.</div>`}</div>
       </section>
     </div>
 
@@ -179,7 +179,7 @@ export function IdeaTable({ ideas, open, compact, costs }) {
         <td class="num">${i.status === 'open' ? html`<span class="mut">open</span>` : html`${fmt.time(i.close_time)}${!sameDay(i.open_time, i.close_time) ? html` <span class="sub">+1d</span>` : ''}`}</td>
         <td class="num r mut">${fmt.dur((i.close_time || Date.now()) - i.open_time).replace(' min', 'm').replace(' h ', 'h ')}</td>
         <td><a href=${'#/ideas/' + i.id} class="hstack" style="color:var(--text);font-weight:600;flex-wrap:nowrap;gap:7px" onClick=${(e) => e.stopPropagation()}>${i.symbol} <${Dir} d=${i.direction}/></a></td>
-        <td class="mut hide-sm" style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${i.strategy_name || '—'}</td>
+        <td class="mut hide-sm" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${i.strategy_name || ''}>${i.strategy_name || '—'}</td>
         <td class="r">${i.status === 'open' ? html`<span class="mut">—</span>` : html`<${R} v=${i.r}/>`}</td>
         <td class="r" style="font-weight:600">${i.status === 'open' ? html`<${Money} v=${i.floating}/><span class="sub"> float</span>` : html`<${Money} v=${i.net}/>`}</td>
         <td class="hide-sm">${i.status === 'open' ? html`<span class="chip b">Open</span>` : i.reviewed ? html`<span class="chip g">Reviewed</span>` : html`<span class="chip a">To review</span>`}</td></tr>`)}</tbody></table>`;
@@ -205,7 +205,7 @@ export function IdeaTable({ ideas, open, compact, costs }) {
 
 // ------------------------------------------------------------------ daily preparation (one list for all strategies)
 
-const SENT = [['bear', 'Bearish', '▼', 'r'], ['neutral', 'Neutral', '–', ''], ['bull', 'Bullish', '▲', 'g']];
+const SENT = [['bear', 'Bear', '▼', 'r'], ['neutral', 'Neutral', '–', ''], ['bull', 'Bull', '▲', 'g']];
 const SENT_STYLE = { bear: 'background:#3A1A1E;border-color:#6A2A31;color:#FF9AA2', neutral: 'background:#1A2030;border-color:#36405A;color:var(--text)', bull: 'background:#12301F;border-color:#1D5A38;color:#5BE3A0' };
 
 /** Step 1 of daily prep: overall sentiment, a bias per market, what you checked, and the Copy prompt button. */
@@ -222,20 +222,16 @@ export function SentimentBlock({ prep, editable = true, onSaved }) {
       .replaceAll('{markets}', opts.markets.join(', '));
     try { await navigator.clipboard.writeText(text); toast('Prompt copied'); } catch { prompt('Copy your prompt', text); }
   };
-  return html`<div class="box stack" style="gap:8px;border-color:#1E2738">
-    <div class="spread"><span class="cap" style="color:#C9D8FF">1 · Market sentiment</span>
-      ${opts.prompt ? html`<button type="button" class="btn sm" style="min-height:26px" onClick=${copy} title="Copy your sentiment prompt to paste into Claude"><${Icon} name="copy" size=${13}/>Copy prompt</button>`
+  const row = (label, cur, onPick, aria) => html`<div style="display:grid;grid-template-columns:62px repeat(3,minmax(0,1fr));gap:4px;align-items:center" role="group" aria-label=${aria}>
+    <span style="font-size:12px;font-weight:600">${label}</span>
+    ${SENT.map(([k, l, ic]) => { const on = cur === k; return html`<button type="button" class="btn sm" disabled=${!editable} aria-pressed=${on} style=${`min-height:26px;padding:0 4px;justify-content:center;font-size:11.5px;${on ? SENT_STYLE[k] : 'color:var(--mut)'}`}
+      onClick=${() => onPick(on ? null : k)}>${ic} ${l}</button>`; })}</div>`;
+  return html`<div class="stack" style="gap:4px">
+    <div class="spread"><span class="cap" style="color:#C9D8FF">1 · Sentiment</span>
+      ${opts.prompt ? html`<button type="button" class="btn sm ghost" style="min-height:22px;padding:0 6px;font-size:11.5px;color:#9DB8FF" onClick=${copy} title="Copy your sentiment prompt to paste into Claude"><${Icon} name="copy" size=${13}/>Copy prompt</button>`
         : html`<a href="#/strategies" style="font-size:11.5px" title="Save the prompt you use to check sentiment">Add your prompt</a>`}</div>
-    <div class="hstack" style="flex-wrap:nowrap;gap:6px" role="group" aria-label="Overall market sentiment">
-      ${SENT.map(([k, l, ic]) => html`<button type="button" class="btn sm" disabled=${!editable} aria-pressed=${v.overall === k} style=${`flex:1;justify-content:center;font-weight:600;${v.overall === k ? SENT_STYLE[k] : ''}`}
-        onClick=${() => save({ ...v, overall: v.overall === k ? null : k })}>${ic} ${l}</button>`)}</div>
-    ${opts.markets.map((m) => html`<div style="display:grid;grid-template-columns:62px repeat(3,minmax(0,1fr));gap:4px;align-items:center" role="group" aria-label=${m + ' bias'}>
-      <span style="font-size:12px;font-weight:600">${m}</span>
-      ${SENT.map(([k, l, ic]) => { const on = v.markets[m] === k; return html`<button type="button" class="btn sm" disabled=${!editable} aria-pressed=${on} style=${`min-height:26px;justify-content:center;font-size:11.5px;${on ? SENT_STYLE[k] : 'color:var(--mut)'}`}
-        onClick=${() => save({ ...v, markets: { ...v.markets, [m]: on ? null : k } })}>${ic} ${k === 'neutral' ? 'Range' : l.slice(0, 4)}</button>`; })}</div>`)}
-    ${opts.basis.length > 0 && html`<div class="hstack" style="gap:5px" role="group" aria-label="What you checked"><span class="sub">Checked:</span>
-      ${opts.basis.map((b) => { const on = v.basis.includes(b); return html`<button type="button" class=${cls('pill', on && 'on')} disabled=${!editable} aria-pressed=${on} style="height:24px;padding:0 8px;font-size:11px"
-        onClick=${() => save({ ...v, basis: on ? v.basis.filter((x) => x !== b) : [...v.basis, b] })}>${b}</button>`; })}</div>`}
+    ${row('Overall', v.overall, (k) => save({ ...v, overall: k }), 'Overall market sentiment')}
+    ${opts.markets.map((mk) => row(mk, v.markets[mk], (k) => save({ ...v, markets: { ...v.markets, [mk]: k } }), mk + ' bias'))}
   </div>`;
 }
 
@@ -254,8 +250,8 @@ function Prep({ prep, reload }) {
   const full = h.data ? h.data.rows.filter((r) => r.day !== prep.day && r.total > 0 && r.done >= r.total).length : null;
   const dayLabel = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date());
   return html`<section class="panel prep-panel" aria-labelledby="preph">
-    <div class="ph"><div><h2 id="preph" style="font-size:14px">Daily preparation</h2><div class="sub" style="margin-top:2px">${dayLabel} · do this before your first trade</div></div>
-      <span class=${cls('chip', left ? 'a' : 'g')}>${left ? `${left} left before trading` : '✓ Ready to trade'}</span></div>
+    <div class="ph"><div><h2 id="preph" style="font-size:14px">Daily preparation</h2><div class="sub" style="margin-top:2px">${dayLabel} · before your first trade</div></div>
+      <span class=${cls('chip', left ? 'a' : 'g')} style="white-space:nowrap" title=${left ? `${left} step${left > 1 ? 's' : ''} left before trading` : 'All done'}>${left ? `${left} left` : '✓ Ready to trade'}</span></div>
     <div class="stack" style="padding:0 14px 12px;gap:10px">
       <${SentimentBlock} prep=${prep} onSaved=${(v) => setOverall(v.overall)}/>
       <div><div class="spread"><span class="cap" style="color:#C9D8FF">2 · Checklist</span><span class="sub num">${done} / ${items.length}</span></div>
@@ -271,6 +267,7 @@ function Prep({ prep, reload }) {
 
 const SESS_COLORS = { Sydney: '#2EC4B6', Tokyo: '#5B8CFF', London: '#F5A524', 'New York': '#C38BFF' };
 const hhmm = (m) => String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0') + ':' + String(((m % 60) + 60) % 60).padStart(2, '0');
+const short = (n) => (n === 'New York' ? 'NY' : n);
 const dur = (k) => (k < 60 ? k + ' min' : Math.floor(k / 60) + ' h' + (k % 60 ? ' ' + String(k % 60).padStart(2, '0') : ''));
 
 function Sessions() {
@@ -292,25 +289,25 @@ function Sessions() {
   const wd = (t, tz) => new Intl.DateTimeFormat('en-AU', { timeZone: tz, weekday: 'short' }).format(t);
   const bneWd = wd(at, 'Australia/Brisbane');
   return html`<section class="panel">
-    <div class="ph" style="padding-bottom:4px"><h2>Market hours</h2>
-      <button type="button" class=${cls('btn sm', scrub == null && 'on')} style="min-height:26px" onClick=${() => setScrub(null)} aria-pressed=${scrub == null}>Now</button></div>
-    <div class="pb" style="padding-bottom:12px">
-      <div style="margin-bottom:6px">
-        <span style="white-space:nowrap;display:block"><b class="num" style="font-size:18px">${hhmm(m)}</b> <span class="sub">${scrub == null ? 'Brisbane · drag to check a time' : 'Brisbane · ' + bneWd}</span></span>
-        <span class="sub" style="display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style=${`color:${open.length ? 'var(--pos)' : 'var(--text2)'}`}>${open.length ? open.join(' + ') + ' open' : 'All closed'}</b>${next ? ' · ' + (next.name === 'New York' ? 'NY' : next.name) + ' in ' + dur(next.k) : ''}</span></div>
+    <div class="ph" style="padding-bottom:6px;gap:10px;flex-wrap:nowrap"><h2 style="white-space:nowrap">Market hours</h2>
+      <span class="hstack" style="flex-wrap:nowrap;gap:8px;min-width:0;justify-content:flex-end" aria-live="polite">
+        <b class="num" style=${`font-size:15px;${scrub != null ? 'color:#9DB8FF' : ''}`} title=${scrub == null ? 'Now, Brisbane time' : `Brisbane, ${bneWd} · release to go back to now`}>${hhmm(m)}</b>
+        <span class="sub" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" title=${`${open.length ? open.join(' + ') + ' open' : 'All closed'}${next ? ' · ' + next.name + ' opens in ' + dur(next.k) : ''}`}><b style=${`color:${open.length ? 'var(--pos)' : 'var(--text2)'}`}>${open.length ? open.map(short).join(' + ') : 'Closed'}</b>${next ? ' · ' + short(next.name) + ' ' + dur(next.k) : ''}</span></span></div>
+    <div class="pb" style="padding-top:0;padding-bottom:10px">
       <div class="mh">
         <div class="mh-ticks" aria-hidden="true"><span></span><div>${[0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => html`<span style=${`left:${P(h * 60)};${h === 0 ? 'transform:none' : h === 24 ? 'transform:translateX(-100%)' : ''}`}>${String(h).padStart(2, '0')}</span>`)}</div></div>
         ${rows.map((r) => { const a = toMin(r.from), b = toMin(r.to), on = open.includes(r.name);
           const spans = a < b ? [[a, b]] : [[a, 1440], [0, b]];
           const x = SESSIONS.find((q) => q.name === r.name), lt = new Date(at + tzOffsetMs(x.tz, at)), lw = wd(at, x.tz);
           return html`<div class="mh-row"><span class="spread" style="flex-wrap:nowrap;padding-right:8px"><span style=${on ? 'color:var(--text);font-weight:600' : ''}>${r.name === 'New York' ? 'New York' : r.name}</span>
-            <span class="num" style=${`font-size:11.5px;color:${on ? SESS_COLORS[r.name] : 'var(--mut)'}`} title=${`Local time in ${r.name}, ${lw}`}>${lw !== bneWd ? html`<span style="opacity:.7;font-size:10px">${lw.slice(0, 2)} </span>` : ''}${hhmm(lt.getUTCHours() * 60 + lt.getUTCMinutes())}</span></span><div class="mh-trk" title=${lw !== bneWd ? `${r.name}: ${lw}` : null}>
+            <span class="num" style=${`font-size:11.5px;color:${on ? SESS_COLORS[r.name] : 'var(--mut)'}`} title=${`Local time in ${r.name}, ${lw}`}>${hhmm(lt.getUTCHours() * 60 + lt.getUTCMinutes())}</span></span><div class="mh-trk" title=${lw !== bneWd ? `${r.name}: ${lw}` : null}>
             ${spans.map(([x, y]) => html`<i style=${`left:${P(x)};width:${P(y - x)};background:${SESS_COLORS[r.name]};opacity:${on ? 1 : 0.35}`}></i>`)}</div></div>`; })}
         <div class="mh-lines" aria-hidden="true">
           <div style=${`left:${P(nowMin)};border-left:1.5px dashed rgba(255,255,255,.55)`}></div>
           ${scrub != null && html`<div style=${`left:${P(m)};border-left:2px solid var(--blue)`}><span class="mh-knob"></span></div>`}</div>
-        <label class="sr" for="mhscrub">Check a time (Brisbane)</label>
+        <label class="sr" for="mhscrub">Check a time (Brisbane). Goes back to now when you let go.</label>
         <input id="mhscrub" class="mh-scrub" type="range" min="0" max="1435" step="5" value=${m} onInput=${(e) => setScrub(Number(e.target.value))}
+          onPointerUp=${() => setScrub(null)} onPointerCancel=${() => setScrub(null)} onTouchEnd=${() => setScrub(null)} onBlur=${() => setScrub(null)}
           aria-valuetext=${`${hhmm(m)} Brisbane, ${open.length ? open.join(' and ') + ' open' : 'all sessions closed'}`}/>
       </div>
     </div>
@@ -350,28 +347,28 @@ function ProfitSplit({ payouts }) {
   const presets = [...new Set([80, 85, 90, 100, ...(cur && cur.split != null ? [cur.split] : [])])].sort((a, b) => a - b);
   const note = cur ? cur.split == null ? 'No split set for this account (Accounts → Payouts)' : String(cur.split) === String(split) ? `Split ${cur.split}% from account settings` : `Account setting ${cur.split}% · changed here`
     : 'Any amount';
+  const rateTxt = manual[ccy] != null && manual[ccy] !== '' ? 'your rate' : fx && fx.AUD ? `ECB ${fx.date}${fx.stale ? ' (old)' : ''}` : fx ? 'enter a rate' : 'loading…';
   return html`<section class="panel">
-    <div class="ph"><h2>Profit split</h2><div class="seg2" role="group" aria-label="Payout currency">${['AUD', 'NZD'].map((c) => html`<button type="button" class=${ccy === c ? 'on' : ''} aria-pressed=${ccy === c} onClick=${() => setCcy(c)}>${c}</button>`)}</div></div>
-    <div class="pb stack" style="gap:9px">
-      <div class="hstack" style="flex-wrap:nowrap;gap:8px">
+    <div class="ph" style="padding-bottom:6px"><h2>Profit split</h2><div class="seg2" role="group" aria-label="Payout currency">${['AUD', 'NZD'].map((c) => html`<button type="button" class=${ccy === c ? 'on' : ''} aria-pressed=${ccy === c} onClick=${() => setCcy(c)}>${c}</button>`)}</div></div>
+    <div class="pb stack" style="gap:7px;padding-top:0">
+      <div class="hstack" style="flex-wrap:nowrap;gap:6px">
         <label class="sr" for="psacct">Account</label>
         <select id="psacct" class="inp sm" style="flex:1;min-width:0" value=${acct} onChange=${(e) => pick(e.target.value)}>
           ${list.map((p) => html`<option value=${p.id}>${p.name} · ${p.kind === 'funded' ? (p.last_payout_day ? 'since payout' : 'profit so far') : 'not funded yet'}</option>`)}
           <option value="any">Any amount</option></select>
         <label class="sr" for="psamt">Profit in USD</label>
-        <div style="position:relative;width:140px;flex:0 0 140px"><span class="mut" style="position:absolute;left:10px;top:9px;font-size:12px">USD</span>
-          <input id="psamt" class="inp sm num" style="padding-left:40px" inputmode="decimal" value=${amount} onInput=${(e) => setAmount(e.target.value)}/></div></div>
-      <div class="hstack" style="flex-wrap:nowrap;gap:8px"><div class="seg2" role="group" aria-label="Profit split" style="flex-wrap:nowrap;flex:0 0 auto">${presets.map((v) => html`<button type="button" class=${String(v) === String(split) ? 'on' : ''} aria-pressed=${String(v) === String(split)} onClick=${() => setSplit(String(v))}>${v}%</button>`)}</div>
-        <span class="sub" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${note}>${note}</span></div>
-      <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.3fr);gap:8px">
-        <div class="box"><div class="cap">Your share</div><div class="num" style="font-size:15px;font-weight:600;margin-top:4px">${fmt.plain(usd)}</div><div class="sub">Firm keeps ${fmt.plain(amt - usd)}</div></div>
-        <div class="box" style="background:#0F2A1C;border-color:#1D4A32" title="Before any firm fees or transfer charges. Your bank's rate on the day will differ a little."><div class="cap" style="color:#8FE3B6">You receive</div>
-          <div class="num" style="font-size:19px;font-weight:700;color:#5BE3A0;margin-top:2px">${local != null ? sym + local.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</div>
-          <div class="sub hstack" style="color:#8FE3B6;gap:4px;flex-wrap:nowrap"><label for="psrate" class="sr">USD to ${ccy} rate</label>@
-            <input id="psrate" class="num" style="width:62px;background:transparent;border:0;border-bottom:1px dashed #3A6B50;color:#8FE3B6;font-size:12px;padding:0" inputmode="decimal"
-              value=${manual[ccy] ?? (liveRate ? liveRate.toFixed(4) : '')} placeholder="rate" onInput=${(e) => setManual({ ...manual, [ccy]: e.target.value })}/>
-            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title=${fx && fx.source ? `${fx.source}, ${fx.date}` : ''}>${manual[ccy] != null && manual[ccy] !== '' ? 'your rate' : fx && fx.AUD ? `ECB ${fx.date}${fx.stale ? ' (old)' : ''}` : fx ? 'enter a rate' : 'loading…'}</span></div></div>
-      </div>
+        <div style="position:relative;width:118px;flex:0 0 118px"><span class="mut" style="position:absolute;left:9px;top:9px;font-size:11.5px">USD</span>
+          <input id="psamt" class="inp sm num" style="padding-left:38px" inputmode="decimal" value=${amount} onInput=${(e) => setAmount(e.target.value)}/></div></div>
+      <div class="spread" style="flex-wrap:nowrap;gap:8px">
+        <div class="seg2" role="group" aria-label="Profit split" title=${note} style="flex-wrap:nowrap;flex:0 0 auto">${presets.map((v) => html`<button type="button" class=${String(v) === String(split) ? 'on' : ''} aria-pressed=${String(v) === String(split)} onClick=${() => setSplit(String(v))}>${v}%</button>`)}</div>
+        <span class="sub" style="text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0" title=${`Firm keeps ${fmt.plain(amt - usd)}. ${note}`}>Share <b class="num" style="color:var(--text)">${fmt.plain(usd)}</b></span></div>
+      <div class="spread" style="flex-wrap:nowrap;gap:8px;padding:7px 10px;border-radius:10px;background:#0F2A1C;border:1px solid #1D4A32" title="Before any firm fees or transfer charges. Your bank's rate on the day will differ a little.">
+        <span class="cap" style="color:#8FE3B6">You receive</span>
+        <span class="hstack" style="flex-wrap:nowrap;gap:8px;min-width:0">
+          <span class="sub hstack" style="color:#8FE3B6;gap:3px;flex-wrap:nowrap" title=${fx && fx.source ? `${fx.source}, ${fx.date} · ${rateTxt}` : rateTxt}><label for="psrate" class="sr">USD to ${ccy} rate</label>@
+            <input id="psrate" class="num" style="width:54px;background:transparent;border:0;border-bottom:1px dashed #3A6B50;color:#8FE3B6;font-size:11.5px;padding:0" inputmode="decimal"
+              value=${manual[ccy] ?? (liveRate ? liveRate.toFixed(4) : '')} placeholder="rate" onInput=${(e) => setManual({ ...manual, [ccy]: e.target.value })}/></span>
+          <b class="num" style="font-size:17px;color:#5BE3A0;white-space:nowrap">${local != null ? sym + local.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</b></span></div>
     </div>
   </section>`;
 }
