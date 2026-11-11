@@ -1,4 +1,26 @@
-# Trade Journal — v1.4 (connector 1.01)
+# Trade Journal — v1.5 (connector 1.01)
+
+## Upgrading to v1.5: daily prep, sentiment, risk limits, linked accounts
+
+The push deploys automatically and runs migration `0006` (risk limit columns, a `prep_sentiment` table and new settings). No Cloudflare step is needed and the connector EA is unchanged.
+
+**Do these once:**
+1. **Accounts & sync → each account → Edit → Max risk per trade idea / Max risk per day** (% of the initial account size), e.g. 0.6% on funded and 1% on challenges. The form shows the dollar amounts.
+2. **Strategies → Market sentiment → Edit:** paste the prompt you use each morning. `{date}` and `{markets}` are filled in when you copy it. Markets default to JP225 and NAS100.
+3. Optional: **Settings → Trade grouping:** the slippage tolerance (default 3%) and account linking (on, 5 minutes).
+
+**What's new:**
+- **Dashboard.** Daily preparation moves to the top of the right column. Step 1 is market sentiment: overall Bearish / Neutral / Bullish, a bias for JP225 and NAS100, what you checked, and a **Copy prompt** button. Step 2 is the checklist. The chip says how many steps are left, then **Ready to trade**. The economic calendar moves to the middle column.
+- **Market hours** is a compact timeline in Brisbane time. Drag across the bars to check any time of day: the readout shows which sessions are open then and each city's local time. **Now** jumps back. The dashed line is the current time.
+- **Risk limits.** Every idea is checked against each account's per-idea limit, and each Brisbane day's ideas against the daily limit (in the order they were opened). Up to the tolerance over the limit is fine (a $300 limit is a violation above $309). Over that, the idea shows **Over risk limit**, the Positions tab lists every account's check, and Analytics counts it as a broken rule even before you review it. Account cards on the dashboard show today's risk against the daily limit.
+- **One review for the same trade on two accounts.** A trade you place by hand on another account that isn't a copier copy (e.g. FundingPips alongside The5ers), with the same instrument and direction within 5 minutes of the first entry, joins the same idea. The header shows “N accounts · one review”. If two unrelated trades were joined, use **Separate** on the Positions tab. Copier copies still link by their `TC:` comment as before. Linking applies to trades synced from now on.
+- **Trade ideas:** a rating filter (5 only, 4 and up, 3 and up, 2 or less, not rated). The header shows whether the trade was with or against that day's bias.
+- **Analytics:** a Sentiment filter and a Bias breakdown, plus a “Trading with your bias” panel.
+
+**Still to come (needs connector 1.02):**
+- Risk is still the sum of each position's initial stop. A scale-in where you moved the first stop to stay inside $300 can still read higher (the 488.28 case) until the connector reports stop changes. The next update measures peak combined open risk instead.
+- That update also adds drawdown and best point during the trade (MAE/MFE in R).
+
 
 ## Upgrading to v1.4: read-only share links
 

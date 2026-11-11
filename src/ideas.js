@@ -1,7 +1,10 @@
 // Read side: assemble trading ideas with per-account results for a chosen scope.
 
-import { all } from './db.js';
+import { all, getSettings, getAliases } from './db.js';
 import { netOf, round } from './build.js';
+import { applyRiskChecks } from './risk.js';
+import { sentimentByDay, alignOf } from './sentiment.js';
+import { bneDay } from './time.js';
 
 const WEEK = 7 * 86400000;
 
@@ -77,6 +80,15 @@ export async function loadIdeas(db, { sample, scope, from = 0, to = 8.64e15, inc
       checklistTotal: stratItems.size, checklistDone: done, checklistMissed: missed, mistakes: mistByIdea[idea.id] || [],
       ...agg,
     });
+  }
+  if (out.length) {
+    // risk limits per account (per idea and per day) and the day's market sentiment
+    const [settings, aliases, accRows] = await Promise.all([getSettings(db), getAliases(db),
+      scope && scope.accounts ? scope.accounts : all(db, 'SELECT * FROM accounts WHERE is_sample = ?', sample)]);
+    applyRiskChecks(out, new Map(accRows.map((a) => [a.id, a])), settings.riskTolerancePct, scope && scope.ids ? scope.ids : null);
+    const days = out.map((i) => bneDay(i.open_time)).sort();
+    const sent = await sentimentByDay(db, sample, days[0], days[days.length - 1]);
+    for (const i of out) Object.assign(i, alignOf(i.symbol, i.direction, sent.get(bneDay(i.open_time)), aliases));
   }
   return out.sort((a, b) => b.open_time - a.open_time);
 }

@@ -40,8 +40,9 @@ function stat(xs) {
 
 const PRESETS = [['today', 'Today'], ['yday', 'Yesterday'], ['wk', 'This week'], ['lwk', 'Last week'], ['m', 'This month'], ['lm', 'Last month'], ['3m', 'Last 3 months'], ['y', 'This year'], ['all', 'All time']];
 const blank = () => ({ preset: '3m', dmode: 'preset', lastn: '30', since: '', from: '', to: '',
-  sym: [], mkt: [], strat: [], sess: [], dir: [], out: [], mist: [], dow: [], hold: [], h1: '', h2: '', rating: 0, comp: 'all', rules: [] });
-const CAT_KEYS = [['sym', 'Symbol'], ['mkt', 'Market'], ['strat', 'Strategy'], ['sess', 'Session'], ['dir', 'Direction'], ['out', 'Outcome'], ['mist', 'Mistakes']];
+  sym: [], mkt: [], strat: [], sess: [], dir: [], out: [], mist: [], sent: [], dow: [], hold: [], h1: '', h2: '', rating: 0, comp: 'all', rules: [] });
+const CAT_KEYS = [['sym', 'Symbol'], ['mkt', 'Market'], ['strat', 'Strategy'], ['sess', 'Session'], ['dir', 'Direction'], ['out', 'Outcome'], ['sent', 'Sentiment'], ['mist', 'Mistakes']];
+const SENT_L = { with: 'With bias', against: 'Against bias', neutral: 'Neutral bias', unset: 'No bias set' };
 const loadF = () => { try { return { ...blank(), ...JSON.parse(localStorage.getItem('tj.af') || '{}') }; } catch { return blank(); } };
 
 function dateWindow(f) {
@@ -95,13 +96,14 @@ function Body({ d }) {
   const ruleName = Object.fromEntries(d.rules.map((r) => [r.id, r.label]));
   const ALL = d.ideas.map((i) => {
     const b = bne(i.open_time);
-    const comp = i.ckTotal > 0 ? (i.ckDone >= i.ckTotal ? 'ok' : i.reviewed ? 'viol' : 'unknown') : 'unknown';
-    return { ...i, day: dayOf(i.close_time), dow: DOW[(b.getUTCDay() + 6) % 7], hour: b.getUTCHours(), sess: sessionOf(i.open_time), mkt: marketOf(i.symbol),
+    // a risk-limit violation counts even before the review; checklist gaps count once reviewed
+    const comp = i.autoViolation ? 'viol' : i.ckTotal > 0 ? (i.ckDone >= i.ckTotal ? 'ok' : i.reviewed ? 'viol' : 'unknown') : 'unknown';
+    return { ...i, day: dayOf(i.close_time), dow: DOW[(b.getUTCDay() + 6) % 7], hour: b.getUTCHours(), sess: sessionOf(i.open_time), mkt: marketOf(i.symbol), sent: SENT_L[i.align || 'unset'] || SENT_L.unset,
       dir: i.direction === 'long' ? 'Long' : 'Short', held: Math.round((i.close_time - i.open_time) / 60000), out: outOf(i), comp,
       mistN: i.mistakes.map((m) => mistName[m]).filter(Boolean), missedN: comp === 'viol' ? i.missed.map((m) => ruleName[m]).filter(Boolean) : [] };
   });
   const uniq = (k) => [...new Set(ALL.map((x) => x[k]))].sort();
-  const CATS = { sym: uniq('symbol'), mkt: uniq('mkt'), strat: uniq('strategy'), sess: uniq('sess'), dir: ['Long', 'Short'], out: ['Win', 'Loss', 'Breakeven'],
+  const CATS = { sym: uniq('symbol'), mkt: uniq('mkt'), strat: uniq('strategy'), sess: uniq('sess'), dir: ['Long', 'Short'], out: ['Win', 'Loss', 'Breakeven'], sent: Object.values(SENT_L),
     mist: [...new Set(ALL.flatMap((x) => x.mistN))].sort() };
   const RULES = [...new Set(d.rules.map((r) => r.label))].sort();
 
@@ -110,7 +112,7 @@ function Body({ d }) {
   const has = (a, v) => !a.length || a.includes(v);
   const inHours = (h) => { if (f.h1 === '' && f.h2 === '') return true; const a = f.h1 === '' ? 0 : +f.h1, b = f.h2 === '' ? 23 : +f.h2; return a <= b ? h >= a && h <= b : h >= a || h <= b; };
   const L = ALL.filter((x) => { const t = dn(x.day); return t >= win.lo && t <= win.hi; })
-    .filter((x) => has(f.sym, x.symbol) && has(f.mkt, x.mkt) && has(f.strat, x.strategy) && has(f.sess, x.sess) && has(f.dir, x.dir) && has(f.out, x.out)
+    .filter((x) => has(f.sym, x.symbol) && has(f.mkt, x.mkt) && has(f.strat, x.strategy) && has(f.sess, x.sess) && has(f.dir, x.dir) && has(f.out, x.out) && has(f.sent, x.sent)
       && (!f.mist.length || x.mistN.some((m) => f.mist.includes(m))) && has(f.dow, x.dow) && has(f.hold, holdOf(x.held)) && inHours(x.hour)
       && (!f.rating || (x.rating || 0) >= f.rating) && (f.comp === 'all' || x.comp === f.comp)
       && (!f.rules.length || x.missedN.some((r) => f.rules.includes(r))));
@@ -187,7 +189,7 @@ function Body({ d }) {
             </div>
             <div class="field"><span class="cap">Hold time</span><div class="hstack" style="gap:6px">${HOLDS.map((v) => pill(f.hold.includes(v), v, () => tog('hold', v)))}</div></div>
           </div>`}
-          <div class="field"><span class="cap">Rule compliance (per-trade checklist)</span>
+          <div class="field"><span class="cap">Rule compliance (checklist and risk limits)</span>
             <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px">${[['all', 'All trades'], ['viol', 'With violations'], ['ok', 'Fully compliant']].map(([k, l]) => pill(f.comp === k, l, () => setF({ comp: k }), 'justify-content:center'))}</div>
             ${RULES.length > 0 && html`<span class="sub" style="margin-top:4px">Only trades that broke any of:</span>
               <div class="hstack" style="gap:6px">${RULES.map((r) => pill(f.rules.includes(r), r, () => tog('rules', r), 'height:26px;font-size:11.5px'))}</div>`}
@@ -213,10 +215,10 @@ function Body({ d }) {
 const DIMS = {
   strat: ['Strategy', (x) => x.strategy], sym: ['Symbol', (x) => x.symbol], mkt: ['Market', (x) => x.mkt], sess: ['Session', (x) => x.sess],
   dow: ['Weekday', (x) => x.dow], hour: ['Entry hour', (x) => String(x.hour).padStart(2, '0') + ':00'], hold: ['Hold time', (x) => holdOf(x.held)],
-  dir: ['Direction', (x) => x.dir], month: ['Month', (x) => x.day.slice(0, 7)], rating: ['Rating', (x) => (x.rating ? x.rating + '★' : 'Not rated')],
+  dir: ['Direction', (x) => x.dir], sent: ['Sentiment', (x) => x.sent], month: ['Month', (x) => x.day.slice(0, 7)], rating: ['Rating', (x) => (x.rating ? x.rating + '★' : 'Not rated')],
 };
-const GROUPS = [['strat', 'Strategy'], ['sym', 'Symbol'], ['mkt', 'Market'], ['sess', 'Session'], ['dow', 'Weekday'], ['hour', 'Hour'], ['hold', 'Hold'], ['dir', 'Side'], ['month', 'Month'], ['rating', 'Rating']];
-const SORT = { dow: (a, b) => DOW.indexOf(a.label) - DOW.indexOf(b.label), hold: (a, b) => HOLDS.indexOf(a.label) - HOLDS.indexOf(b.label), month: (a, b) => a.label.localeCompare(b.label), hour: (a, b) => a.label.localeCompare(b.label) };
+const GROUPS = [['strat', 'Strategy'], ['sym', 'Symbol'], ['mkt', 'Market'], ['sess', 'Session'], ['dow', 'Weekday'], ['hour', 'Hour'], ['hold', 'Hold'], ['dir', 'Side'], ['sent', 'Bias'], ['month', 'Month'], ['rating', 'Rating']];
+const SORT = { sent: (a, b) => Object.values(SENT_L).indexOf(a.label) - Object.values(SENT_L).indexOf(b.label), dow: (a, b) => DOW.indexOf(a.label) - DOW.indexOf(b.label), hold: (a, b) => HOLDS.indexOf(a.label) - HOLDS.indexOf(b.label), month: (a, b) => a.label.localeCompare(b.label), hour: (a, b) => a.label.localeCompare(b.label) };
 
 function groupOf(L, key) {
   const g = {};
@@ -237,12 +239,13 @@ function Results({ L, S, groupBy, setGroupBy, curve, setCurve }) {
   });
   // patterns: groups with 4+ ideas (but not the whole selection), by average R
   const segs = [];
-  ['strat', 'sym', 'mkt', 'sess', 'dow', 'hour', 'hold', 'dir'].forEach((k) => groupOf(L, k).forEach((g) => { if (g.n >= 4 && g.n < S.n && g.avg != null) segs.push({ dim: DIMS[k][0], ...g }); }));
+  ['strat', 'sym', 'mkt', 'sess', 'dow', 'hour', 'hold', 'dir', 'sent'].forEach((k) => groupOf(L, k).forEach((g) => { if (g.n >= 4 && g.n < S.n && g.avg != null) segs.push({ dim: DIMS[k][0], ...g }); }));
   segs.sort((a, b) => b.avg - a.avg);
   const ins = [];
   segs.filter((g) => g.avg > 0).slice(0, 2).forEach((g) => ins.push({ tag: 'Strength', c: 'g', title: `${g.dim}: ${g.label}`, sub: `${g.n} ideas · ${fmt.rate(g.win)} win · ${fR(g.tot)} total`, v: fR(g.avg) }));
   segs.filter((g) => g.avg < 0).slice(-2).reverse().forEach((g) => ins.push({ tag: 'Leak', c: 'r', title: `${g.dim}: ${g.label}`, sub: `${g.n} ideas · ${fmt.rate(g.win)} win · ${fR(g.tot)} total`, v: fR(g.avg) }));
   const ok = stat(L.filter((x) => x.comp === 'ok')), bad = stat(L.filter((x) => x.comp === 'viol'));
+  const sw = stat(L.filter((x) => x.align === 'with')), sa = stat(L.filter((x) => x.align === 'against'));
   if (bad.n) ins.push({ tag: 'Rules', c: 'a', title: 'Ideas with a broken rule', sub: `${bad.n} of ${S.n} ideas · ${fR(bad.tot)} in total`, v: fR(bad.avg) });
   // heatmap: weekday × entry hour (only hours with trades), trading-day order from 05:00
   const hrs = [...new Set(L.map((x) => x.hour))].sort((a, b) => ((a + 19) % 24) - ((b + 19) % 24));
@@ -313,9 +316,13 @@ function Results({ L, S, groupBy, setGroupBy, curve, setCurve }) {
         ${B.map((b, k) => html`<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:5px;height:100%"><span class="num sub">${cnt[k]}</span>
           <div style=${`width:100%;border-radius:6px 6px 0 0;min-height:2px;height:${Math.round(cnt[k] / cmax * 118)}px;background:${k < 3 ? 'var(--neg)' : 'var(--pos)'}`}></div></div>`)}</div>
         <div style="display:flex;gap:8px;margin-top:6px">${B.map((b) => html`<span class="sub num" style="flex:1;text-align:center;font-size:10.5px">${b[0]}</span>`)}</div></div></section>
-    <section class="panel"><div class="ph"><h2>Rules followed vs broken</h2></div>
+    <section class="panel"><div class="ph"><h2>Rules followed vs broken</h2><span class="sub">incl. risk limits</span></div>
       <div class="pb" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${box('All rules followed', ok)}${box('A rule broken', bad)}
         <div class="sub" style="grid-column:1/-1">${ok.n && bad.n && ok.avg != null && bad.avg != null ? `Breaking a rule cost ${(ok.avg - bad.avg).toFixed(2)}R per idea on average in this selection.` : 'Tick the per-trade checklist on your reviews to compare.'}</div></div></section>
+    <section class="panel"><div class="ph"><h2>Trading with your bias</h2><span class="sub">daily prep sentiment</span></div>
+      <div class="pb" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${box('With bias', sw)}${box('Against bias', sa)}
+        <div class="sub" style="grid-column:1/-1">${sw.n && sa.n && sw.avg != null && sa.avg != null ? `Against your bias you averaged ${(sa.avg - sw.avg >= 0 ? '+' : '') + (sa.avg - sw.avg).toFixed(2)}R per idea compared with trading with it.`
+          : 'Set the sentiment in daily prep each morning to compare. Neutral and unset days are left out here.'}</div></div></section>
     <section class="panel"><div class="ph"><h2>Costliest mistakes</h2><span class="sub">tagged in reviews</span></div>
       <div style="padding:0 6px 8px">${mrows.length ? html`<table class="mtbl"><thead><tr><th>Mistake</th><th class="r">Ideas</th><th class="r">Avg R</th><th class="r">Total R</th></tr></thead>
         <tbody>${mrows.slice(0, 8).map((m) => html`<tr><td style="white-space:normal">${m.label}</td><td class="num r">${m.n}</td><td class=${cls('num r', tone(m.avg))}>${fR(m.avg)}</td><td class=${cls('num r', tone(m.tot))} style="font-weight:600">${fR(m.tot)}</td></tr>`)}</tbody></table>`

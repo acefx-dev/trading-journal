@@ -15,6 +15,7 @@ export function Ideas({ id }) {
   const [status, setStatus] = useState('all');
   const [strategy, setStrategy] = useState('');
   const [q, setQ] = useState('');
+  const [rating, setRating] = useState('');
   const today = todayBne();
   const from = range === 'all' ? '' : addDays(today, -(Number(range) - 1));
   const qs = `${scopeQs()}&from=${from}&strategy=${strategy}&limit=500`;
@@ -24,7 +25,8 @@ export function Ideas({ id }) {
   const mist = Object.fromEntries(s.boot.mistakes.map((m) => [m.id, m.label]));
   const needle = q.trim().toLowerCase();
   const base = needle ? all.filter((i) => [i.symbol, i.strategy_name, i.direction, i.lead_name, ...i.mistakes.map((m) => mist[m])].join(' ').toLowerCase().includes(needle)) : all;
-  const list = base.filter((i) => status === 'all' || statusOf(i) === status);
+  const rateOk = (i) => !rating || (rating === 'none' ? !i.rating : rating === 'low' ? i.rating && i.rating <= 2 : (i.rating || 0) >= Number(rating));
+  const list = base.filter((i) => (status === 'all' || statusOf(i) === status) && rateOk(i));
   const count = (k) => base.filter((i) => k === 'all' || statusOf(i) === k).length;
   const selId = id ? Number(id) : null;
   // on a wide screen, open the first idea when none is chosen
@@ -49,13 +51,16 @@ export function Ideas({ id }) {
             ${s.boot.strategies.map((x) => html`<option value=${x.id}>${x.name}</option>`)}</select>
           <label class="sr" for="iper">Period</label>
           <select id="iper" class="inp sm" value=${range} onChange=${(e) => setRange(e.target.value)}>${PERIODS.map(([v, l]) => html`<option value=${v}>${l}</option>`)}</select>
+          <label class="sr" for="irate">Rating</label>
+          <select id="irate" class="inp sm" value=${rating} onChange=${(e) => setRating(e.target.value)} title="Execution rating">
+            <option value="">Any rating</option><option value="5">★★★★★ only</option><option value="4">★★★★ and up</option><option value="3">★★★ and up</option><option value="low">★★ or less</option><option value="none">Not rated</option></select>
           <a href="#/analytics" class="btn sm">More filters</a>
         </div>
         <div class="gr gh ig" style="grid-template-columns:${GRID}"><span>Opened</span><span>Idea · strategy</span><span class="r">Held</span><span class="r">R</span><span class="r">P&L</span><span class="hide-sm">Rating</span><span>Status</span></div>
         <div class="scrolly">
           ${st.error ? html`<div class="warn err" style="margin:12px">${st.error}</div>` : !st.data ? html`<div class="empty">Loading…</div>`
             : list.map((i) => html`<${Row} i=${i} on=${i.id === selId}/>`)}
-          ${st.data && !list.length && html`<div class="empty">No ideas match. Clear the search or pick another period.</div>`}
+          ${st.data && !list.length && html`<div class="empty">No ideas match. Clear the search${rating ? ', the rating filter' : ''} or pick another period.</div>`}
         </div>
         <div class="sub hstack" style="border-top:1px solid #1B212C;padding:9px 14px;gap:18px">
           <span><b class="num" style="color:var(--text)">${sum.n}</b> ideas</span><span>Win rate <b class="num" style="color:var(--text)">${sum.w + sum.l ? Math.round(sum.w * 100 / (sum.w + sum.l)) + '%' : '—'}</b></span>
@@ -109,6 +114,9 @@ function IdeaPanel({ id, prev, next, reloadList }) {
   const lead = d.positions.filter((p) => p.account_id === i.account_id);
   const leadAcc = i.accounts.find((a) => a.lead) || i.accounts[0];
   const done = d.checklist.filter((c) => c.checked).length;
+  const risk = d.risk, sent = d.sentiment;
+  const twins = [...new Set(d.positions.filter((p) => p.copy_link === 'twin').map((p) => p.account_id))];
+  const leadCheck = risk && risk.checks.find((c) => c.account_id === i.account_id);
   const toggleReviewed = async () => {
     try { await api('/ideas/' + i.id, { method: 'PUT', body: { reviewed: !i.reviewed_at } }); toast(i.reviewed_at ? 'Marked as not reviewed' : 'Marked as reviewed'); reload(); } catch (e) { toast(e.message, true); }
   };
@@ -119,6 +127,9 @@ function IdeaPanel({ id, prev, next, reloadList }) {
         <h2 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-.02em">${i.symbol} ${i.direction === 'long' ? 'Long' : 'Short'}</h2>
         ${i.status === 'open' ? html`<span class="chip b">Open</span>` : i.reviewed_at ? html`<span class="chip g">Reviewed</span>` : html`<span class="chip a">To review</span>`}
         ${i.strategy_name && html`<span class="chip">${i.strategy_name}</span>`}
+        ${twins.length > 0 && html`<span class="chip b" title="The same trade placed by hand on another account was linked here, so you review it once">${i.accounts.length} accounts · one review</span>`}
+        ${sent && sent.align && sent.align !== 'unset' && html`<span class=${cls('chip', sent.align === 'with' ? 'g' : sent.align === 'against' ? 'r' : '')} title=${`Your ${sent.day} bias: ${BIAS[sent.bias] || 'not set'}`}>${sent.align === 'with' ? 'With bias' : sent.align === 'against' ? 'Against bias' : 'Neutral bias'}</span>`}
+        ${risk && (risk.violation || risk.dayViolation) && html`<span class="chip r" title="Risk above your limit plus the slippage tolerance">${risk.violation ? 'Over risk limit' : 'Over daily risk'}</span>`}
         <div class="hstack" style="margin-left:auto;gap:6px">
           ${store.mode !== 'sample' && html`<button type="button" class="btn sm" onClick=${() => { pickTab('chart'); setTimeout(() => document.getElementById('shotfile')?.click(), 50); }}><${Icon} name="img" size=${15}/><span class="hide-sm">Add screenshot</span></button>`}
           <button type="button" class="btn sm" aria-label="Newer idea" disabled=${!prev} onClick=${prev}><${Icon} name="back" size=${15}/></button>
@@ -130,7 +141,7 @@ function IdeaPanel({ id, prev, next, reloadList }) {
     <div class="mstrip">
       <div class="kcell"><div class="cap">${i.accounts.length > 1 ? 'Combined P&L' : 'Net P&L'}</div><div class=${cls('num', sgn(i.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.net)}</div><div class="sub">${i.status === 'open' ? 'floating' : 'after costs'}</div></div>
       <div class="kcell"><div class="cap">Result</div><div class=${cls('num', sgn(leadAcc.r))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(leadAcc.r)}</div><div class="sub">${i.lead_name}</div></div>
-      <div class="kcell"><div class="cap">Initial risk</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div><div class="sub">${leadAcc.risk == null ? 'no S/L seen' : 'lead account'}</div></div>
+      <div class="kcell"><div class="cap">Initial risk</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div><div class="sub">${leadAcc.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : 'lead account'}</div></div>
       <div class="kcell"><div class="cap">Costs</div><div class=${cls('num', sgn(i.costs))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.costs)}</div><div class="sub">comm. · swap · fees</div></div>
       <div class="kcell"><div class="cap">Checklist</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${d.checklist.length ? done + ' / ' + d.checklist.length : '—'}</div><div class="sub">${!i.strategy_id ? 'no strategy' : d.checklist.length - done ? (d.checklist.length - done) + ' not ticked' : 'all ticked'}</div></div>
     </div>
@@ -138,10 +149,30 @@ function IdeaPanel({ id, prev, next, reloadList }) {
     <div class="scrolly tabbody" style="padding:14px 16px 16px">
       ${leadAcc.risk == null && i.status === 'closed' && html`<div class="warn" style="margin-bottom:12px">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
       ${tab === 'review' && html`<${Review} d=${d} reload=${reload}/>`}
-      ${tab === 'pos' && html`<div class="stack" style="gap:18px"><${Positions} d=${d} reload=${reload}/><${Executions} i=${i}/><${Grouping} d=${d} reload=${reload}/></div>`}
+      ${tab === 'pos' && html`<div class="stack" style="gap:18px">${risk && risk.checks.length > 0 && html`<${RiskChecks} risk=${risk}/>`}<${Positions} d=${d} reload=${reload}/><${Executions} i=${i}/><${Grouping} d=${d} reload=${reload}/></div>`}
       ${tab === 'chart' && html`<${Chart} d=${d} reload=${reload}/>`}
       ${tab === 'log' && html`<${Audit} items=${d.audit}/>`}
     </div>`;
+}
+
+const BIAS = { bull: 'Bullish', bear: 'Bearish', neutral: 'Neutral' };
+const LVL = { ok: ['g', 'Within limit'], tolerance: ['a', 'Within tolerance'], over: ['r', 'Over limit'] };
+
+/** Risk taken on each account against that account's limits (Accounts page). */
+function RiskChecks({ risk }) {
+  const pct = (v) => (v == null ? '' : ` (${fmt.num(v, 2)}%)`);
+  return html`<section class="card flush">
+    <div class="card-head"><div><h2 class="h2">Risk limits</h2><div class="sub" style="margin-top:4px">Up to ${fmt.num(risk.tolerancePct, 1)}% over a limit is allowed for slippage. Above that it counts as a violation.</div></div></div>
+    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th class="r">Risk on this idea</th><th class="r">Per-idea limit</th><th></th><th class="r">Risk that day</th><th class="r">Daily limit</th><th></th></tr></thead>
+    <tbody>${risk.checks.map((c) => html`<tr><td><b>${c.name}</b></td>
+      <td class="num r">${c.risk != null ? fmt.plain(c.risk) + pct(c.riskPct) : html`<span class="mut">no S/L</span>`}</td>
+      <td class="num r">${c.limit != null ? fmt.plain(c.limit) + pct(c.limitPct) : html`<span class="mut">not set</span>`}</td>
+      <td>${c.level && LVL[c.level] ? html`<span class=${'chip ' + LVL[c.level][0]}>${LVL[c.level][1]}</span>` : ''}</td>
+      <td class="num r">${c.dayUsed != null ? fmt.plain(c.dayUsed) : '—'}</td>
+      <td class="num r">${c.dayLimit != null ? fmt.plain(c.dayLimit) + pct(c.dayLimitPct) : html`<span class="mut">not set</span>`}</td>
+      <td>${c.dayLevel && LVL[c.dayLevel] ? html`<span class=${'chip ' + LVL[c.dayLevel][0]}>${LVL[c.dayLevel][1]}</span>` : ''}</td></tr>`)}</tbody></table></div>
+    <div class="sub" style="padding:8px 14px 12px">Risk is the sum of each position's initial stop. If you moved stops to keep a scale-in within your limit, this can overstate it until the connector update that tracks stop changes.</div>
+  </section>`;
 }
 
 function Positions({ d, reload }) {
@@ -154,7 +185,9 @@ function Positions({ d, reload }) {
     <div class="card-head"><div><h2 class="h2">Positions</h2><div class="sub" style="margin-top:4px">Original MT5 position IDs. Prices in each broker's own symbol.</div></div></div>
     <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th>Position</th><th>Opened</th><th class="r">Lots</th><th class="r">Entry</th><th class="r">Initial S/L</th><th class="r">Exit</th><th>Closed</th><th class="r">Gross</th><th class="r">Comm.</th><th class="r">Swap</th><th class="r">Fees</th><th class="r">Net P&L</th><th class="r">R</th><th><span class="sr">Actions</span></th></tr></thead>
     <tbody>${Object.values(byAcct).map((ps) => ps.map((p, k) => html`<tr>
-      <td>${k === 0 ? html`<b>${p.account_name}</b>${p.account_id === i.account_id ? html` <span class="chip b">Lead</span>` : ''}` : ''}</td>
+      <td>${k === 0 ? html`<b>${p.account_name}</b>${p.account_id === i.account_id ? html` <span class="chip b">Lead</span>` : p.copy_link === 'twin' ? html` <span class="chip" title="Placed by hand, linked as the same trade">Same trade</span>` : ''}
+        ${p.account_id !== i.account_id && !p.master_pos && html`<div><button class="btn sm" style="min-height:26px;margin-top:4px" title="This account's trade is a separate idea: move it out and review it on its own"
+          onClick=${async () => { if (!confirm(`Move ${p.account_name}'s positions to a separate idea?`)) return; try { const r = await api('/ideas/' + i.id + '/unlink', { method: 'POST', body: { account_id: p.account_id } }); toast('Moved to its own idea'); reload(); if (r && r.id) location.hash = '#/ideas/' + i.id; } catch (e) { toast(e.message, true); } }}>Separate</button></div>`}` : ''}</td>
       <td class="num">#${p.position_id}${p.master_position_id && html`<div class="sub" title=${p.copy_link === 'comment' ? 'Linked by the copier comment' : p.copy_link === 'match' ? 'Linked by symbol, side and time' : 'Linked by hand'}>copy of #${p.master_position_id}</div>`}</td>
       <td class="num">${fmt.timeS(p.open_time)}<div class="sub">${p.symbol}</div></td>
       <td class="num r">${fmt.num(p.volume)}</td>

@@ -85,6 +85,14 @@ function Detail({ a, p, payout, firm, onEdit, onConnect, onImport, reloadPay }) 
           ${p && (p.rules.length > 0 || p.target || p.missing) ? html`<${PropBars} p=${p} wide/>${p.rules.map((r) => html`<div class="sub">${r.label}: ${r.note}.</div>`)}`
             : html`<div class="sub">No rules set. Add the firm's daily loss, max loss and target with Edit.</div>`}
           <div class="sub">Risk Guard Rail and the copier enforce your limits in MT5. The journal only warns.</div></div>
+        <div class="box stack" style="gap:8px">
+          <span class="cap">Your risk limits (checked on every idea)</span>
+          ${a.max_risk_trade_pct || a.max_risk_day_pct ? html`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px">
+            ${kv('Per trade idea', a.max_risk_trade_pct ? html`<span class="num">${fmt.num(a.max_risk_trade_pct, 2)}%${a.size ? ' · ' + fmt.plain(a.size * a.max_risk_trade_pct / 100) : ''}</span>` : '—')}
+            ${kv('Per day', a.max_risk_day_pct ? html`<span class="num">${fmt.num(a.max_risk_day_pct, 2)}%${a.size ? ' · ' + fmt.plain(a.size * a.max_risk_day_pct / 100) : ''}</span>` : '—')}
+            ${kv('Slippage tolerance', html`<span class="num">${store.boot.settings.risk_tolerance_pct ?? 3}%</span>`)}</div>
+            <div class="sub">Above a limit plus the tolerance, the idea is flagged as a violation and counted in Analytics.</div>`
+          : html`<div class="sub">Not set. Add a max risk per trade idea and per day with Edit (for example 0.6% funded, 1% challenge).</div>`}</div>
       </div>`}
       ${tab === 'pay' && html`<${Payout} a=${a} payout=${payout} reloadPay=${reloadPay}/>`}
       ${tab === 'share' && html`<${Share} a=${a}/>`}
@@ -242,6 +250,7 @@ function AccountForm({ a, all, firms, onClose }) {
     max_loss_type: a.max_loss_type || 'static', profit_target_pct: a.profit_target_pct ?? '', tz_mode: a.tz_mode || 'auto', status: a.status || 'active',
     daily_reset_tz: a.daily_reset_tz || 'server', daily_reset_time: a.daily_reset_time || '00:00', daily_loss_of: a.daily_loss_of || 'start', daily_loss_from: a.daily_loss_from || 'higher',
     profit_split_pct: a.profit_split_pct ?? '', last_payout_day: a.last_payout_day || '', payout_currency: a.payout_currency || 'AUD',
+    max_risk_trade_pct: a.max_risk_trade_pct ?? '', max_risk_day_pct: a.max_risk_day_pct ?? '',
   }));
   const [v, setV] = useState(init);
   const dirty = JSON.stringify(v) !== JSON.stringify(init);
@@ -285,6 +294,14 @@ function AccountForm({ a, all, firms, onClose }) {
       ${F('arh', 'Daily reset: time', html`<input id="arh" class="inp" type="time" value=${v.daily_reset_time} onInput=${set('daily_reset_time')}/>`)}
       ${F('alo', 'Daily loss limit is a % of', html`<select id="alo" class="inp" style="width:100%" value=${v.daily_loss_of} onChange=${set('daily_loss_of')}><option value="start">The start-of-day amount</option><option value="initial">The initial account size</option></select>`)}
       ${F('alf', 'Daily loss is measured from', html`<select id="alf" class="inp" style="width:100%" value=${v.daily_loss_from} onChange=${set('daily_loss_from')}><option value="higher">The higher of balance and equity at the reset</option><option value="balance">The balance at the reset</option></select>`)}
+    </div>
+    <div class="fields">
+      ${F('arp', 'Max risk per trade idea (% of size)', html`<input id="arp" class="inp" type="number" min="0" max="100" step="0.05" value=${v.max_risk_trade_pct} onInput=${set('max_risk_trade_pct')} placeholder=${v.kind === 'funded' ? '0.6' : '1'}/>`)}
+      ${F('ard', 'Max risk per day (% of size)', html`<input id="ard" class="inp" type="number" min="0" max="100" step="0.05" value=${v.max_risk_day_pct} onInput=${set('max_risk_day_pct')} placeholder="optional"/>`)}
+      <div class="sub" style="grid-column:1/-1">${(() => { const sz = Number(v.size), t = Number(v.max_risk_trade_pct), d = Number(v.max_risk_day_pct), tol = Number(store.boot.settings.risk_tolerance_pct ?? 3);
+        const m = (x) => '$' + (Math.round(x * 100) / 100).toLocaleString('en-US');
+        return sz && (t || d) ? `${t ? `Per idea ${m(sz * t / 100)} (a violation above ${m(sz * t / 100 * (1 + tol / 100))})` : ''}${t && d ? ' · ' : ''}${d ? `per day ${m(sz * d / 100)}` : ''}. The ${tol}% tolerance covers slippage; change it in Settings.`
+          : 'Risk is checked on every idea from its stops. Leave blank to skip the check.'; })()}</div>
     </div>
     <div class="fields">
       ${F('aps', 'Profit split (your share %)', html`<input id="aps" class="inp" type="number" min="0" max="100" step="0.5" value=${v.profit_split_pct} onInput=${set('profit_split_pct')} placeholder="80"/>`)}

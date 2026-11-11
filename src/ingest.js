@@ -236,14 +236,26 @@ async function groupLead(db, account, rows, settings, aliases, now) {
   const maxOpen = Math.max(...rows.map((r) => r.open_time));
   const existing = (await all(db, `SELECT p.id, p.position_id, p.account_id, p.direction, p.open_time, p.close_time, p.idea_id, i.symbol AS canon
       FROM positions p JOIN ideas i ON i.id = p.idea_id
-      WHERE p.account_id = ? AND i.account_id = p.account_id AND p.open_time >= ? AND p.open_time <= ?`,
+      WHERE p.account_id = ? AND p.master_pos IS NULL AND p.open_time >= ? AND p.open_time <= ?`,
     account.id, minOpen - windowMs, maxOpen)).map((e) => ({ ...e, ideaKey: 'i' + e.idea_id }));
 
   const fresh = []; // new ideas: {key, canon, direction, first}
   const assign = []; // {id, key}
+  const twins = [];  // positions linked to the same trade on another account
   for (const r of rows) {
     const pos = { position_id: r.position_id, account_id: r.account_id, canon: canonical(r.symbol, aliases), direction: r.direction, open_time: r.open_time };
     let key = pickIdea(pos, existing, { windowMs, requireOverlap: settings.requireOverlap });
+    if (!key && settings.linkAccounts && account.role !== 'copy') {
+      // the same trade placed on another (non-copy) account within the window → one idea, one review
+      const w = settings.linkWindowMin * 60000;
+      const twin = await first(db, `SELECT i.id, a.name, MIN(p.open_time) AS first_open FROM ideas i
+          JOIN positions p ON p.idea_id = i.id AND p.account_id = i.account_id JOIN accounts a ON a.id = i.account_id
+        WHERE i.is_sample = ? AND i.account_id != ? AND a.role != 'copy' AND i.symbol = ? AND i.direction = ?
+          AND NOT EXISTS (SELECT 1 FROM positions q WHERE q.idea_id = i.id AND q.account_id = ?)
+        GROUP BY i.id HAVING ABS(first_open - ?) <= ? ORDER BY ABS(first_open - ?) LIMIT 1`,
+        account.is_sample, account.id, pos.canon, r.direction, account.id, r.open_time, w, r.open_time);
+      if (twin) { key = 'i' + twin.id; twins.push({ id: r.id, idea: twin.id, position_id: r.position_id, name: twin.name, diff: Math.round(Math.abs(twin.first_open - r.open_time) / 1000) }); }
+    }
     if (!key) {
       key = 'n' + fresh.length;
       fresh.push({ key, canon: pos.canon, direction: r.direction });
@@ -265,7 +277,14 @@ async function groupLead(db, account, rows, settings, aliases, now) {
 
   const logs = [];
   const seenNew = new Set();
+  const twinIds = new Set(twins.map((t) => t.id));
+  if (twins.length) {
+    await run(db, "UPDATE positions SET copy_link = 'twin' WHERE id IN (SELECT value FROM json_each(?))", JSON.stringify([...twinIds]));
+    for (const t of twins) logs.push(audit(db, { actor: 'system', account_id: account.id, idea_id: t.idea, time: now, action: 'Linked to the same trade',
+      detail: `#${t.position_id} on ${account.name} joins the idea on ${t.name} (same symbol and side, opened ${t.diff}s apart). Reviewed once.` }));
+  }
   for (const a of resolved) {
+    if (twinIds.has(a.id)) continue;
     if (a.isNew && !seenNew.has(a.idea)) {
       seenNew.add(a.idea);
       logs.push(audit(db, { actor: 'system', account_id: account.id, idea_id: a.idea, time: now, action: 'Idea created', detail: `from position #${a.position_id}` }));

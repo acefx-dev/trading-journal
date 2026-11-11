@@ -14,6 +14,8 @@ const now = Date.now();
 const T0 = now - 3 * 3600000; // a trade 3 hours ago
 
 const uniq = String(Math.floor(Math.random() * 1e6));
+// earlier runs leave trades at the same times, so keep account linking off until section 21
+await api('PUT', '/settings', { link_accounts: false });
 const firm = await api('POST', '/firms', { name: 'Sim firm ' + uniq });
 const master = await api('POST', '/accounts', { name: 'Sim Master ' + uniq, login: '7' + uniq, firm_id: firm.id, kind: 'funded', size: 50000, role: 'master', max_loss_pct: 10, daily_loss_pct: 5 });
 const copy = await api('POST', '/accounts', { name: 'Sim Copy ' + uniq, login: '8' + uniq, firm_id: firm.id, kind: 'challenge', size: 100000, role: 'copy', master_account_id: master.id, profit_target_pct: 8 });
@@ -252,6 +254,47 @@ assert.equal((await fetch(BASE + `/share/api/${link.token}`, { method: 'POST' })
 assert.equal((await pub(`/share/api/${link.token}/shot/999999`)).status, 404, 'only this account\'s screenshots');
 await api('DELETE', `/shares/${link.id}`);
 assert.equal((await pub(`/share/api/${link.token}`)).status, 404, 'deleted');
+
+// 21. v1.5: same trade placed by hand on two accounts → one idea; separate; risk limits; sentiment
+await api('PUT', '/settings', { link_accounts: true });
+const fpA = await api('POST', '/accounts', { name: 'Sim FP ' + uniq, login: '5' + uniq, firm_id: firm.id, kind: 'funded', size: 50000, role: 'standalone', max_risk_trade_pct: 0.6, max_risk_day_pct: 1.5 });
+const tokFP = (await api('POST', `/accounts/${fpA.id}/token`)).token;
+const T1 = now - (35 + Number(uniq) % 120) * 60000; // differs per run, so earlier runs' trades don't link
+const usM = { ticket: 61177203, order: 68120931, position: 68120931, time: srv(T1), type: 1, entry: 0, symbol: 'US100', volume: 1, price: 21500, profit: 0, commission: 0, swap: 0, fee: 0, sl: 21520, tp: 0, risk: 200, magic: 0, reason: 0, comment: '' };
+await send(mTok, '7' + uniq, { deals: [usM], positions: [{ position: usM.position, symbol: 'US100', type: 1, volume: 1, price: 21500, sl: 21520, tp: 0, time: srv(T1), profit: 5, swap: 0, risk: 200, comment: '' }] });
+// FundingPips: same symbol (other broker name), same side, 2 minutes later, risk 305 on a 300 limit → within the 3% tolerance
+const usF = { ...usM, ticket: 71177203, order: 78120931, position: 78120931, time: srv(T1 + 120000), symbol: 'NAS100', price: 21502, sl: 21522, risk: 305 };
+const sF = await send(tokFP, '5' + uniq, { deals: [usF], positions: [{ position: usF.position, symbol: 'NAS100', type: 1, volume: 1, price: 21502, sl: 21522, tp: 0, time: srv(T1 + 120000), profit: 4, swap: 0, risk: 305, comment: '' }] });
+assert.equal(sF.ok, true);
+const fl = await api('GET', `/ideas?firm=${firm.id}&limit=500`);
+const twin = fl.items.filter((x) => x.symbol === 'NAS100' && x.status === 'open' && x.open_time >= T1 - 1000);
+assert.equal(twin.length, 1, 'one idea for the same trade on two accounts');
+const tw = await api('GET', `/ideas/${twin[0].id}`);
+assert.ok(tw.positions.some((p) => p.account_id === fpA.id && p.copy_link === 'twin'), 'FP position linked as the same trade');
+const fpCheck = tw.risk.checks.find((c) => c.account_id === fpA.id);
+assert.equal(fpCheck.limit, 300); assert.equal(fpCheck.level, 'tolerance', '305 on 300 is within 3% (309)');
+assert.equal(tw.risk.violation, false);
+// separate it again
+const sep = await api('POST', `/ideas/${twin[0].id}/unlink`, { account_id: fpA.id });
+assert.ok(sep.id && sep.id !== twin[0].id);
+const sepD = await api('GET', `/ideas/${sep.id}`);
+assert.ok(sepD.positions.every((p) => p.account_id === fpA.id), 'separated idea holds FP only');
+assert.equal((await api('GET', `/ideas/${twin[0].id}`)).positions.some((p) => p.account_id === fpA.id), false);
+// a second FP trade the same day, risk 320 → over (above 309)
+const usF2 = { ...usF, ticket: 71177300, order: 78121000, position: 78121000, time: srv(T1 + 30 * 60000), symbol: 'JP225', price: 50100, sl: 50140, risk: 320 };
+await send(tokFP, '5' + uniq, { deals: [usF2], positions: [{ position: usF.position, symbol: 'NAS100', type: 1, volume: 1, price: 21502, sl: 21522, tp: 0, time: srv(T1 + 120000), profit: 4, swap: 0, risk: 305, comment: '' }, { position: usF2.position, symbol: 'JP225', type: 1, volume: 1, price: 50100, sl: 50140, tp: 0, time: srv(T1 + 30 * 60000), profit: 0, swap: 0, risk: 320, comment: '' }] });
+const fpIdeas = await api('GET', `/ideas?acct=${fpA.id}&limit=50`);
+const over = fpIdeas.items.find((x) => x.symbol === 'JP225');
+const overD = await api('GET', `/ideas/${over.id}`);
+assert.equal(overD.risk.violation, true, '320 on a 300 limit is a violation');
+// sentiment: bullish NAS100 makes a short "against"
+const prep = await api('PUT', '/prep/sentiment', { overall: 'bull', markets: { NAS100: 'bull', JP225: 'bear' }, basis: ['VIX'] });
+assert.equal(prep.ok, true);
+assert.equal((await api('GET', `/ideas/${sep.id}`)).sentiment.align, 'against');
+assert.equal((await api('GET', `/ideas/${over.id}`)).sentiment.align, 'with', 'JP225 bearish, trade short');
+await api('PUT', '/prep/sentiment', { overall: null, markets: {}, basis: [] });
+const dsh = await api('GET', `/dashboard?acct=${fpA.id}`);
+assert.ok(dsh.accounts[0].riskToday && dsh.accounts[0].riskToday.limit === 750, 'daily risk on the dashboard');
 
 console.log('connector simulation: all checks passed');
 function round(x) { return Math.round(x * 100) / 100; }

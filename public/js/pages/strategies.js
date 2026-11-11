@@ -44,6 +44,7 @@ export function Strategies() {
       <section class="panel" style="min-height:300px">${cur ? html`<${Editor} key=${cur.id} st=${cur} p=${all[cur.id]}/>` : html`<div class="empty">Create a strategy to start.</div>`}</section>
       <div class="colstack">
         <${Prep}/>
+        <${SentimentSetup}/>
         <${Grouping}/>
       </div>
     </div>
@@ -209,6 +210,29 @@ function Prep() {
       }}<//>
       <div class="sub">Resets 12:00 AM Brisbane. Shown on the dashboard. Past days keep the list as it was, so editing it never rewrites history.</div>
     </div>
+  </section>`;
+}
+
+function SentimentSetup() {
+  const s = useStore();
+  const set = s.boot.settings;
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ markets: set.sentiment_markets ?? 'JP225,NAS100', basis: set.sentiment_basis ?? '', prompt: set.sentiment_prompt || '' });
+  const save = async (e) => {
+    e.preventDefault();
+    try { await api('/settings', { method: 'PUT', body: { sentiment_markets: f.markets, sentiment_basis: f.basis, sentiment_prompt: f.prompt } }); await reloadBoot(); toast('Sentiment settings saved'); setOpen(false); }
+    catch (err) { toast(err.message, true); }
+  };
+  return html`<section class="panel">
+    <div class="ph"><div><h2>Market sentiment</h2><div class="sub" style="margin-top:2px">Step 1 of daily prep · ${(f.markets || '').split(',').filter(Boolean).join(', ') || 'overall only'}</div></div>
+      <button type="button" class="btn sm" onClick=${() => setOpen(!open)} aria-expanded=${open}>${open ? 'Close' : 'Edit'}</button></div>
+    ${open ? html`<form class="pb stack" style="gap:8px" onSubmit=${save}>
+      <label class="stack" style="gap:4px"><span class="sub">Markets (comma separated)</span><input class="inp sm" value=${f.markets} onInput=${(e) => setF({ ...f, markets: e.target.value })} placeholder="JP225,NAS100"/></label>
+      <label class="stack" style="gap:4px"><span class="sub">What you check (chips you can tick)</span><input class="inp sm" value=${f.basis} onInput=${(e) => setF({ ...f, basis: e.target.value })} placeholder="US futures,VIX,USDJPY,Headlines"/></label>
+      <label class="stack" style="gap:4px"><span class="sub">Your sentiment prompt · the Copy prompt button copies this. {date} and {markets} are filled in for you.</span>
+        <textarea class="inp" rows="6" maxlength="8000" value=${f.prompt} onInput=${(e) => setF({ ...f, prompt: e.target.value })} placeholder="Paste the prompt you use to check today's sentiment"></textarea></label>
+      <div class="hstack"><button class="btn sm pri" type="submit">Save</button><span class="sub">${f.prompt.length} / 8000</span></div>
+    </form>` : html`<div class="pb sub" style="padding-top:0">${set.sentiment_prompt ? 'Prompt saved · copy it from the dashboard.' : 'No prompt saved yet. Click Edit to paste yours.'} Trades are tagged as with, against or neutral to the bias you set for that market.</div>`}
   </section>`;
 }
 

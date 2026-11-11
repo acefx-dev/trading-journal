@@ -1,4 +1,4 @@
-import { html, useState, useEffect, useStore, useData, api, scopeQs, fmt, sgn, cls, Money, R, Dir, Bar, Loading, LineChart, PageHead, toast, store, setStore, reloadBoot, kindLabel, roleLabel } from '../lib.js';
+import { html, useState, useEffect, useStore, useData, api, scopeQs, fmt, sgn, cls, Money, R, Dir, Bar, Loading, LineChart, PageHead, toast, store, setStore, reloadBoot, kindLabel, roleLabel, Icon } from '../lib.js';
 import { sessionsInBrisbane, openSessions, SESSIONS, tzOffsetMs } from '../sessions.js';
 
 const COLORS = ['#5B8CFF', '#F5A524', '#2EC4B6', '#C38BFF', '#FF8FB1'];
@@ -64,13 +64,13 @@ function Body({ d, reload }) {
     </div>
 
     <div class="colstack">
-      <${Prep} prep=${d.prep} reload=${reload}/>
+      <${EconCalendar}/>
       <${Sessions}/>
       <${ProfitSplit} payouts=${d.payouts}/>
     </div>
 
     <div class="colstack wide2">
-      <${EconCalendar}/>
+      <${Prep} prep=${d.prep} reload=${reload}/>
       <${AccountsPanel} accounts=${d.accounts}/>
     </div>
   </div>`;
@@ -157,6 +157,9 @@ function AccountsPanel({ accounts }) {
           <span class="num" style="font-size:13px;font-weight:600">${fmt.plain(a.balance)}</span></div>
         ${a.prop && !a.prop.missing ? html`<${PropBars} p=${a.prop} compact/>` : html`<div class="sub">${a.prop && a.prop.missing ? a.prop.missing : 'No prop rules set'}</div>`}
         <div class="sub spread"><span>Since reset <${Money} v=${a.prop && a.prop.todayPnl != null ? a.prop.todayPnl : a.today}/></span><span>Month <${Money} v=${a.month}/></span></div>
+        ${a.riskToday && a.riskToday.limit ? html`<div class="sub spread" title="Risk taken on trades opened today vs your daily risk limit (Accounts page)">
+          <span>Risk today <b class=${cls('num', a.riskToday.level === 'over' ? 'neg' : '')} style=${a.riskToday.level === 'tolerance' ? 'color:var(--amber)' : ''}>${fmt.plain(a.riskToday.used)}</b> / ${fmt.plain(a.riskToday.limit)}</span>
+          <span>${a.riskToday.level === 'over' ? html`<span class="chip r">Over daily limit</span>` : a.riskToday.tradeLimit ? `Per idea ${fmt.plain(a.riskToday.tradeLimit)}` : ''}</span></div>` : ''}
       </div>`)}
       ${!list.length && html`<div class="empty">No accounts in this view.</div>`}
     </div>
@@ -202,69 +205,115 @@ export function IdeaTable({ ideas, open, compact, costs }) {
 
 // ------------------------------------------------------------------ daily preparation (one list for all strategies)
 
+const SENT = [['bear', 'Bearish', '▼', 'r'], ['neutral', 'Neutral', '–', ''], ['bull', 'Bullish', '▲', 'g']];
+const SENT_STYLE = { bear: 'background:#3A1A1E;border-color:#6A2A31;color:#FF9AA2', neutral: 'background:#1A2030;border-color:#36405A;color:var(--text)', bull: 'background:#12301F;border-color:#1D5A38;color:#5BE3A0' };
+
+/** Step 1 of daily prep: overall sentiment, a bias per market, what you checked, and the Copy prompt button. */
+export function SentimentBlock({ prep, editable = true, onSaved }) {
+  const opts = prep.sentimentOptions || { markets: [], basis: [], prompt: '' };
+  const init = prep.sentiment || { overall: null, markets: {}, basis: [] };
+  const [v, setV] = useState({ overall: init.overall || null, markets: init.markets || {}, basis: init.basis || [] });
+  const save = async (next) => {
+    setV(next);
+    try { await api('/prep/sentiment', { method: 'PUT', body: { ...next, day: prep.day } }); onSaved && onSaved(next); } catch (e) { toast(e.message, true); }
+  };
+  const copy = async () => {
+    const text = (opts.prompt || '').replaceAll('{date}', new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date()))
+      .replaceAll('{markets}', opts.markets.join(', '));
+    try { await navigator.clipboard.writeText(text); toast('Prompt copied'); } catch { prompt('Copy your prompt', text); }
+  };
+  return html`<div class="box stack" style="gap:8px;border-color:#1E2738">
+    <div class="spread"><span class="cap" style="color:#C9D8FF">1 · Market sentiment</span>
+      ${opts.prompt ? html`<button type="button" class="btn sm" style="min-height:26px" onClick=${copy} title="Copy your sentiment prompt to paste into Claude"><${Icon} name="copy" size=${13}/>Copy prompt</button>`
+        : html`<a href="#/strategies" style="font-size:11.5px" title="Save the prompt you use to check sentiment">Add your prompt</a>`}</div>
+    <div class="hstack" style="flex-wrap:nowrap;gap:6px" role="group" aria-label="Overall market sentiment">
+      ${SENT.map(([k, l, ic]) => html`<button type="button" class="btn sm" disabled=${!editable} aria-pressed=${v.overall === k} style=${`flex:1;justify-content:center;font-weight:600;${v.overall === k ? SENT_STYLE[k] : ''}`}
+        onClick=${() => save({ ...v, overall: v.overall === k ? null : k })}>${ic} ${l}</button>`)}</div>
+    ${opts.markets.map((m) => html`<div style="display:grid;grid-template-columns:62px repeat(3,minmax(0,1fr));gap:4px;align-items:center" role="group" aria-label=${m + ' bias'}>
+      <span style="font-size:12px;font-weight:600">${m}</span>
+      ${SENT.map(([k, l, ic]) => { const on = v.markets[m] === k; return html`<button type="button" class="btn sm" disabled=${!editable} aria-pressed=${on} style=${`min-height:26px;justify-content:center;font-size:11.5px;${on ? SENT_STYLE[k] : 'color:var(--mut)'}`}
+        onClick=${() => save({ ...v, markets: { ...v.markets, [m]: on ? null : k } })}>${ic} ${k === 'neutral' ? 'Range' : l.slice(0, 4)}</button>`; })}</div>`)}
+    ${opts.basis.length > 0 && html`<div class="hstack" style="gap:5px" role="group" aria-label="What you checked"><span class="sub">Checked:</span>
+      ${opts.basis.map((b) => { const on = v.basis.includes(b); return html`<button type="button" class=${cls('pill', on && 'on')} disabled=${!editable} aria-pressed=${on} style="height:24px;padding:0 8px;font-size:11px"
+        onClick=${() => save({ ...v, basis: on ? v.basis.filter((x) => x !== b) : [...v.basis, b] })}>${b}</button>`; })}</div>`}
+  </div>`;
+}
+
 function Prep({ prep, reload }) {
   const [local, setLocal] = useState({});
+  const [overall, setOverall] = useState(prep.sentiment ? prep.sentiment.overall : null);
   const h = useData(() => api('/prep/history?days=14'), []);
   const items = prep.items.map((i) => ({ ...i, checked: local[i.id] ?? i.checked }));
   const done = items.filter((i) => i.checked).length;
+  const left = items.length - done + (overall ? 0 : 1);
   const toggle = async (it) => {
     setLocal({ ...local, [it.id]: !it.checked });
     try { await api('/prep', { method: 'PUT', body: { item_id: it.id, checked: !it.checked, day: prep.day } }); h.reload(); }
     catch (e) { toast(e.message, true); setLocal({ ...local, [it.id]: it.checked }); reload(); }
   };
   const full = h.data ? h.data.rows.filter((r) => r.day !== prep.day && r.total > 0 && r.done >= r.total).length : null;
-  return html`<section class="panel" style="flex:1;min-height:170px">
-    <div class="ph"><div><h2>Daily preparation</h2><div class="sub" style="margin-top:2px">All strategies · resets 12:00 AM Brisbane</div></div>
-      <span class=${cls('chip num', items.length && done === items.length ? 'g' : 'b')}>${done} / ${items.length}</span></div>
-    ${items.length > 0 && html`<div style="margin:0 14px 6px"><${Bar} pct=${done / items.length * 100}/></div>`}
-    <div class="scrolly" style="padding:0 14px 6px">
-      ${items.map((it) => html`<label class=${cls('ck', it.checked && 'done')} style="min-height:34px;font-size:12.5px;gap:10px"><input type="checkbox" checked=${it.checked} onChange=${() => toggle(it)} style="width:16px;height:16px;flex:0 0 16px"/><span>${it.label}</span></label>`)}
-      ${!items.length && html`<div class="sub" style="padding:8px 0">No daily items yet. Add them on the <a href="#/strategies">Strategies</a> page.</div>`}
+  const dayLabel = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', weekday: 'short', day: 'numeric', month: 'short' }).format(new Date());
+  return html`<section class="panel prep-panel" aria-labelledby="preph">
+    <div class="ph"><div><h2 id="preph" style="font-size:14px">Daily preparation</h2><div class="sub" style="margin-top:2px">${dayLabel} · do this before your first trade</div></div>
+      <span class=${cls('chip', left ? 'a' : 'g')}>${left ? `${left} left before trading` : '✓ Ready to trade'}</span></div>
+    <div class="stack" style="padding:0 14px 12px;gap:10px">
+      <${SentimentBlock} prep=${prep} onSaved=${(v) => setOverall(v.overall)}/>
+      <div><div class="spread"><span class="cap" style="color:#C9D8FF">2 · Checklist</span><span class="sub num">${done} / ${items.length}</span></div>
+        ${items.map((it) => html`<label class=${cls('ck', it.checked && 'done')} style="min-height:28px;font-size:12.5px;gap:10px;padding-top:3px;padding-bottom:3px"><input type="checkbox" checked=${it.checked} onChange=${() => toggle(it)} style="width:16px;height:16px;flex:0 0 16px"/><span>${it.label}</span></label>`)}
+        ${!items.length && html`<div class="sub" style="padding:8px 0">No daily items yet. Add them on the <a href="#/strategies">Strategies</a> page.</div>`}</div>
+      <${Bar} pct=${items.length ? done / items.length * 100 : 0} color=${left ? 'var(--blue)' : 'var(--pos)'}/>
+      <div class="sub spread"><span>${full == null ? '' : `Last 14 days: ${full} complete`}</span><a href="#/strategies" style="font-size:12px">Edit</a></div>
     </div>
-    <div class="sub spread" style="border-top:1px solid #1B212C;padding:8px 14px"><span>${full == null ? '' : `Last 14 days: ${full} complete`}</span><a href="#/strategies" style="font-size:12px">Edit checklist</a></div>
   </section>`;
 }
 
-// ------------------------------------------------------------------ market sessions (today, in Brisbane time)
+// ------------------------------------------------------------------ market hours (today, Brisbane time, draggable)
 
 const SESS_COLORS = { Sydney: '#2EC4B6', Tokyo: '#5B8CFF', London: '#F5A524', 'New York': '#C38BFF' };
+const hhmm = (m) => String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart(2, '0') + ':' + String(((m % 60) + 60) % 60).padStart(2, '0');
+const dur = (k) => (k < 60 ? k + ' min' : Math.floor(k / 60) + ' h' + (k % 60 ? ' ' + String(k % 60).padStart(2, '0') : ''));
 
 function Sessions() {
   const [now, setNow] = useState(Date.now());
-  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 60000); return () => clearInterval(t); }, []);
+  const [scrub, setScrub] = useState(null); // minutes after Brisbane midnight, or null = now
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+  const dayStart = Date.parse(new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Brisbane' }).format(now) + 'T00:00:00+10:00');
+  const nowMin = Math.floor((now - dayStart) / 60000);
+  const m = scrub == null ? nowMin : scrub;
+  const at = dayStart + m * 60000;
   const rows = sessionsInBrisbane(now);
-  const open = openSessions(now).map((s) => s.name);
-  const bne = new Date(now + 10 * 3600000);
-  const nowH = bne.getUTCHours() + bne.getUTCMinutes() / 60;
-  const toH = (hm) => +hm.slice(0, 2) + +hm.slice(3) / 60;
-  // the next session to open (a weekday in its own city)
+  const open = openSessions(at).map((x) => x.name);
+  // next session to open after the chosen time
   let next = null;
-  for (const s of SESSIONS) {
-    if (open.includes(s.name)) continue;
-    const off = tzOffsetMs(s.tz, now), loc = new Date(now + off);
-    for (let k = 0; k < 5; k++) {
-      const day = new Date(Date.UTC(loc.getUTCFullYear(), loc.getUTCMonth(), loc.getUTCDate() + k));
-      const wd = day.getUTCDay();
-      if (wd < 1 || wd > 5) continue;
-      const t = day.getTime() + s.open * 3600000 - tzOffsetMs(s.tz, day.getTime() + s.open * 3600000 - off);
-      if (t > now) { const m = Math.round((t - now) / 60000); if (!next || m < next.m) next = { name: s.name, m }; break; }
-    }
-  }
-  const W = 340, L = 62, Rr = 4, rowH = 20, top = 18, span = W - L - Rr, X = (h) => L + span * h / 24, H = top + rows.length * rowH;
-  const nextTxt = next ? `${next.name} in ${next.m < 60 ? next.m + ' min' : Math.floor(next.m / 60) + ' h ' + String(next.m % 60).padStart(2, '0')}` : '';
+  // sessions open on whole hours (all these zones have whole-hour offsets), so step by hour
+  for (let k = 60 - (((m % 60) + 60) % 60); k <= 72 * 60 && !next; k += 60) { const o = openSessions(at + k * 60000).find((x) => !open.includes(x.name)); if (o) next = { name: o.name, k }; }
+  const toMin = (hm) => +hm.slice(0, 2) * 60 + +hm.slice(3);
+  const P = (v) => (v / 1440 * 100).toFixed(3) + '%';
+  const wd = (t, tz) => new Intl.DateTimeFormat('en-AU', { timeZone: tz, weekday: 'short' }).format(t);
+  const bneWd = wd(at, 'Australia/Brisbane');
   return html`<section class="panel">
-    <div class="ph"><h2 title="Brisbane time. Each session follows its own city's hours, so daylight saving is handled.">Market sessions <span class="sub" style="font-weight:400">· Brisbane time</span></h2><span class=${cls('chip', open.length ? 'g' : '')}>${open.length ? html`<span class="dot" style="background:var(--pos)"></span>${open.join(' + ')} open` : 'All closed'}${nextTxt ? ' · ' + nextTxt : ''}</span></div>
-    <div class="pb"><svg viewBox=${`0 0 ${W} ${H + 2}`} width="100%" role="img" aria-label=${'Sessions today in Brisbane time: ' + rows.map((r) => `${r.name} ${r.from} to ${r.to}`).join(', ')}>
-      ${[0, 6, 12, 18, 24].map((h) => html`<line x1=${X(h)} x2=${X(h)} y1=${top - 4} y2=${H} stroke="#171C25"/>
-        <text x=${X(h)} y="10" fill="#7F8897" font-size="10" text-anchor=${h === 0 ? 'start' : h === 24 ? 'end' : 'middle'} font-family="JetBrains Mono, monospace">${String(h).padStart(2, '0')}</text>`)}
-      ${rows.map((r, i) => {
-        const y = top + i * rowH, a = toH(r.from), b = toH(r.to);
-        const spans = a < b ? [[a, b]] : [[a, 24], [0, b]];
-        return html`<text x="0" y=${y + 11} fill="#C3CAD6" font-size="11.5">${r.name}</text>
-          ${spans.map(([p, q]) => html`<rect x=${X(p)} y=${y + 2} width=${Math.max(1, X(q) - X(p))} height="10" rx="5" fill=${SESS_COLORS[r.name]} opacity=${open.includes(r.name) ? 1 : 0.5}/>`)}`;
-      })}
-      <line x1=${X(nowH)} x2=${X(nowH)} y1=${top - 6} y2=${H} stroke="#FFFFFF" stroke-width="1.4"/><circle cx=${X(nowH)} cy=${top - 6} r="3" fill="#FFFFFF"/>
-    </svg></div>
+    <div class="ph" style="padding-bottom:4px"><h2>Market hours</h2>
+      <button type="button" class=${cls('btn sm', scrub == null && 'on')} style="min-height:26px" onClick=${() => setScrub(null)} aria-pressed=${scrub == null}>Now</button></div>
+    <div class="pb" style="padding-bottom:12px">
+      <div style="margin-bottom:6px">
+        <span style="white-space:nowrap;display:block"><b class="num" style="font-size:18px">${hhmm(m)}</b> <span class="sub">${scrub == null ? 'Brisbane · drag to check a time' : 'Brisbane · ' + bneWd}</span></span>
+        <span class="sub" style="display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style=${`color:${open.length ? 'var(--pos)' : 'var(--text2)'}`}>${open.length ? open.join(' + ') + ' open' : 'All closed'}</b>${next ? ' · ' + (next.name === 'New York' ? 'NY' : next.name) + ' in ' + dur(next.k) : ''}</span></div>
+      <div class="mh">
+        <div class="mh-ticks" aria-hidden="true"><span></span><div>${[0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => html`<span style=${`left:${P(h * 60)};${h === 0 ? 'transform:none' : h === 24 ? 'transform:translateX(-100%)' : ''}`}>${String(h).padStart(2, '0')}</span>`)}</div></div>
+        ${rows.map((r) => { const a = toMin(r.from), b = toMin(r.to), on = open.includes(r.name);
+          const spans = a < b ? [[a, b]] : [[a, 1440], [0, b]];
+          const x = SESSIONS.find((q) => q.name === r.name), lt = new Date(at + tzOffsetMs(x.tz, at)), lw = wd(at, x.tz);
+          return html`<div class="mh-row"><span class="spread" style="flex-wrap:nowrap;padding-right:8px"><span style=${on ? 'color:var(--text);font-weight:600' : ''}>${r.name === 'New York' ? 'New York' : r.name}</span>
+            <span class="num" style=${`font-size:11.5px;color:${on ? SESS_COLORS[r.name] : 'var(--mut)'}`} title=${`Local time in ${r.name}, ${lw}`}>${lw !== bneWd ? html`<span style="opacity:.7;font-size:10px">${lw.slice(0, 2)} </span>` : ''}${hhmm(lt.getUTCHours() * 60 + lt.getUTCMinutes())}</span></span><div class="mh-trk" title=${lw !== bneWd ? `${r.name}: ${lw}` : null}>
+            ${spans.map(([x, y]) => html`<i style=${`left:${P(x)};width:${P(y - x)};background:${SESS_COLORS[r.name]};opacity:${on ? 1 : 0.35}`}></i>`)}</div></div>`; })}
+        <div class="mh-lines" aria-hidden="true">
+          <div style=${`left:${P(nowMin)};border-left:1.5px dashed rgba(255,255,255,.55)`}></div>
+          ${scrub != null && html`<div style=${`left:${P(m)};border-left:2px solid var(--blue)`}><span class="mh-knob"></span></div>`}</div>
+        <label class="sr" for="mhscrub">Check a time (Brisbane)</label>
+        <input id="mhscrub" class="mh-scrub" type="range" min="0" max="1435" step="5" value=${m} onInput=${(e) => setScrub(Number(e.target.value))}
+          aria-valuetext=${`${hhmm(m)} Brisbane, ${open.length ? open.join(' and ') + ' open' : 'all sessions closed'}`}/>
+      </div>
+    </div>
   </section>`;
 }
 
@@ -334,12 +383,12 @@ const MYFX = 'https://widget.mfbcdn.net/widget/calendar.html?lang=en&impacts=3&s
 function EconCalendar() {
   const [dark, setDark] = useState(() => { try { return localStorage.getItem('tj.calDark') !== '0'; } catch { return true; } });
   const flip = () => { const v = !dark; setDark(v); try { localStorage.setItem('tj.calDark', v ? '1' : '0'); } catch { /* ignore */ } };
-  return html`<section class="panel" style="flex:1;min-height:300px">
+  return html`<section class="panel" style="flex:1;min-height:190px">
     <div class="ph"><div><h2>Economic calendar</h2><div class="sub" style="margin-top:2px">High impact · 8 currencies</div></div>
       <div class="hstack" style="gap:6px"><button type="button" class="btn sm ghost" onClick=${flip} title="Switch the widget's colours">${dark ? 'Light' : 'Dark'}</button>
         <a href="https://www.myfxbook.com/forex-economic-calendar" target="_blank" rel="noopener" style="font-size:12px">Open</a></div></div>
     <div style="flex:1;min-height:0;border-top:1px solid #1B212C;overflow:hidden;background:${dark ? '#10141B' : '#fff'}">
-      <iframe src=${MYFX} title="Economic calendar by Myfxbook" loading="lazy" style=${`width:100%;height:100%;min-height:240px;border:0;display:block;${dark ? 'filter:invert(.9) hue-rotate(180deg)' : ''}`}></iframe></div>
+      <iframe src=${MYFX} title="Economic calendar by Myfxbook" loading="lazy" style=${`width:100%;height:100%;min-height:130px;border:0;display:block;${dark ? 'filter:invert(.9) hue-rotate(180deg)' : ''}`}></iframe></div>
     <div style="padding:7px 14px;border-top:1px solid #1B212C;font-size:11px;color:#7F8897;display:flex;justify-content:space-between;gap:8px">
       <span>Times follow the widget's own time zone setting</span>
       <span><a href="https://www.myfxbook.com/forex-economic-calendar?utm_source=widget13&utm_medium=link&utm_campaign=copyright" title="Economic Calendar" target="_blank" rel="noopener" style="color:#C3CAD6;font-weight:600">Economic Calendar</a> by Myfxbook.com</span></div>

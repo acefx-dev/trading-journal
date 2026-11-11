@@ -34,7 +34,8 @@ function DefaultView({ b }) {
 }
 
 function Grouping({ b }) {
-  const [v, setV] = useState({ group_window_min: b.settings.group_window_min, group_require_overlap: b.settings.group_require_overlap === '1', copy_match_window_sec: b.settings.copy_match_window_sec });
+  const [v, setV] = useState({ group_window_min: b.settings.group_window_min, group_require_overlap: b.settings.group_require_overlap === '1', copy_match_window_sec: b.settings.copy_match_window_sec,
+    link_accounts: b.settings.link_accounts !== '0', link_window_min: b.settings.link_window_min || '5', risk_tolerance_pct: b.settings.risk_tolerance_pct ?? '3' });
   const save = async (e) => { e.preventDefault(); try { await api('/settings', { method: 'PUT', body: v }); await reloadBoot(); toast('Saved. New trades use these rules.'); } catch (err) { toast(err.message, true); } };
   return html`<section class="card stack"><h2 class="h2">Trade grouping</h2>
     <div class="sub">How positions become one trading idea. Applies to trades synced from now on; ideas you changed by hand are never regrouped.</div>
@@ -46,6 +47,14 @@ function Grouping({ b }) {
       <label class="ck" style="border:0"><input type="checkbox" checked=${v.group_require_overlap} onChange=${() => setV({ ...v, group_require_overlap: !v.group_require_overlap })}/>
         <span>Only group a position if another position of the idea was still open (recommended)</span></label>
       <div class="sub">Always required: same account, same instrument (after symbol names below), same direction. Unrelated trades are never combined.</div>
+      <h3 class="cap" style="margin:6px 0 0">Same trade on several accounts</h3>
+      <label class="ck" style="border:0"><input type="checkbox" checked=${v.link_accounts} onChange=${() => setV({ ...v, link_accounts: !v.link_accounts })}/>
+        <span>Link a trade placed by hand on another account (not a copier copy) to the same idea, so you review it once</span></label>
+      <div class="fields">
+        <div class="field"><label class="lbl" for="lw">Linking window (minutes between the two entries)</label><input id="lw" class="inp" type="number" min="1" max="120" disabled=${!v.link_accounts} value=${v.link_window_min} onInput=${(e) => setV({ ...v, link_window_min: e.target.value })}/></div>
+        <div class="field"><label class="lbl" for="rt">Risk limit tolerance for slippage (%)</label><input id="rt" class="inp" type="number" min="0" max="50" step="0.5" value=${v.risk_tolerance_pct} onInput=${(e) => setV({ ...v, risk_tolerance_pct: e.target.value })}/></div>
+      </div>
+      <div class="sub">Linking needs the same instrument and direction. Copier copies are always linked by their TC: comment. Use “Separate” on an idea's Positions tab if two trades were linked by mistake. With a ${v.risk_tolerance_pct || 0}% tolerance, a $300 limit is a violation above $${(300 * (1 + Number(v.risk_tolerance_pct || 0) / 100)).toFixed(0)}.</div>
       <div><button class="btn pri" type="submit">Save</button></div>
     </form></section>`;
 }

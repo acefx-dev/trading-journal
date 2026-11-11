@@ -220,6 +220,7 @@ textarea.inp { padding: 10px 12px; min-height: 110px; resize: vertical; line-hei
   .content { padding: 14px 12px 96px; gap: 12px; }
   .sample-bar { padding: 8px 14px; }
   .dash3, .strat3, .acct2, .split2, .split-side { grid-template-columns: minmax(0, 1fr); }
+  .dash3 > .wide2 { order: -1; } /* daily prep first on a phone */
   .kstrip, .kstrip.k7 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .kcell:nth-child(odd) { border-left: 0; } .kcell:nth-child(n+3) { border-top: 1px solid #1B212C; }
   .hide-phone { display: none !important; }
@@ -238,3 +239,21 @@ textarea.inp { padding: 10px 12px; min-height: 110px; resize: vertical; line-hei
   .modal-bg { padding: 0; } .modal { border-radius: 0; min-height: 100vh; }
   .hide-sm { display: none !important; }
 }
+
+/* ---- market hours timeline (v1.5) ---- */
+.mh { position: relative; display: grid; gap: 5px; }
+.mh-ticks, .mh-row { display: grid; grid-template-columns: 120px minmax(0, 1fr); align-items: center; }
+.mh-ticks > div { position: relative; height: 13px; }
+.mh-ticks > div span { position: absolute; top: 0; transform: translateX(-50%); font-size: 10.5px; color: var(--mut); font-variant-numeric: tabular-nums; }
+.mh-row > span { font-size: 12px; color: var(--text2); white-space: nowrap; }
+.mh-trk { position: relative; height: 12px; border-radius: 4px; background: rgba(255,255,255,.04); }
+.mh-trk i { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.mh-lines { position: absolute; left: 120px; right: 0; top: 16px; bottom: 0; pointer-events: none; }
+.mh-lines > div { position: absolute; top: -2px; bottom: -2px; }
+.mh-knob { position: absolute; top: -6px; left: -6px; width: 10px; height: 10px; border-radius: 50%; background: var(--blue); }
+.mh-scrub { position: absolute; left: 120px; right: 0; top: 14px; bottom: 0; width: calc(100% - 120px); margin: 0; opacity: 0; cursor: ew-resize; height: auto; }
+.mh-scrub:focus-visible { opacity: .25; }
+.colstack > .prep-panel { flex: 0 0 auto; }
+.prep-panel { border-color: #2B3A5C; box-shadow: 0 0 0 1px rgba(91,140,255,.12) inset; }
+.prep-panel .ph h2 { color: #E6ECFF; }
+.btn.on { background: #17264A; border-color: #34519A; color: #DCE6FF; }

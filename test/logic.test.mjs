@@ -226,3 +226,40 @@ test('MT5 statement import: UTF-16 HTML report and CSV', () => {
   assert.equal(csv.length, 1); assert.equal(csv[0].sl, 1.088); assert.equal(csv[0].profit, 150);
   assert.equal(parseNum('1 234.56'), 1234.56); assert.equal(parseNum('-1,234.5'), -1234.5);
 });
+
+// ---------------------------------------------------------------- v1.5: risk limits and sentiment
+import { riskLevel, applyRiskChecks } from '../src/risk.js';
+import { alignOf } from '../src/sentiment.js';
+
+test('risk limit with 3% tolerance for slippage', () => {
+  assert.equal(riskLevel(300, 300, 3), 'ok');
+  assert.equal(riskLevel(305, 300, 3), 'tolerance');   // $5 of slippage is not a violation
+  assert.equal(riskLevel(309, 300, 3), 'tolerance');
+  assert.equal(riskLevel(310, 300, 3), 'over');
+  assert.equal(riskLevel(488.28, 300, 3), 'over');
+  assert.equal(riskLevel(100, null, 3), null);
+});
+
+test('daily risk is cumulative in opening order, per account', () => {
+  const acc = new Map([[1, { id: 1, size: 50000, max_risk_trade_pct: 0.6, max_risk_day_pct: 1.2 }], [2, { id: 2, size: 100000, max_risk_trade_pct: 1, max_risk_day_pct: 3 }]]);
+  const day = Date.parse('2026-11-10T01:00:00Z');
+  const ideas = [
+    { id: 'a', open_time: day, accounts: [{ account_id: 1, name: 'FP', risk: 300 }, { account_id: 2, name: '5ers', risk: 1000 }] },
+    { id: 'b', open_time: day + 3600e3, accounts: [{ account_id: 1, name: 'FP', risk: 300 }] },
+    { id: 'c', open_time: day + 7200e3, accounts: [{ account_id: 1, name: 'FP', risk: 320 }] },
+  ];
+  applyRiskChecks(ideas, acc, 3);
+  assert.equal(ideas[0].risk_violation, false); assert.equal(ideas[0].day_violation, false);
+  assert.equal(ideas[1].day_violation, false);                       // $600 = 1.2% exactly
+  assert.equal(ideas[2].risk_violation, true);                       // $320 > $309
+  assert.equal(ideas[2].day_violation, true);                        // $920 > $618
+  assert.equal(ideas[2].risk_checks[0].dayUsed, 920);
+});
+
+test('trading with or against the day\'s sentiment', () => {
+  const s = { overall: 'bull', markets: { JP225: 'bear' } };
+  assert.deepEqual(alignOf('JP225', 'short', s), { bias: 'bear', align: 'with' });   // the market's own bias wins
+  assert.deepEqual(alignOf('NAS100', 'short', s), { bias: 'bull', align: 'against' });
+  assert.deepEqual(alignOf('NAS100', 'long', { overall: 'neutral', markets: {} }), { bias: 'neutral', align: 'neutral' });
+  assert.deepEqual(alignOf('NAS100', 'long', null), { bias: null, align: 'unset' });
+});

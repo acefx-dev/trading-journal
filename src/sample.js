@@ -52,6 +52,7 @@ export async function clearSample(db) {
     stmt(db, 'DELETE FROM daily_checks WHERE strategy_id IN (SELECT id FROM strategies WHERE is_sample = 1)'),
     stmt(db, 'DELETE FROM prep_checks WHERE item_id IN (SELECT id FROM prep_items WHERE is_sample = 1)'),
     stmt(db, 'DELETE FROM prep_items WHERE is_sample = 1'),
+    stmt(db, 'DELETE FROM prep_sentiment WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM strategies WHERE is_sample = 1'),
     stmt(db, 'UPDATE accounts SET master_account_id = NULL WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM accounts WHERE is_sample = 1'),
@@ -82,6 +83,9 @@ export async function seedSample(db, now = Date.now()) {
   await db.batch([
     stmt(db, 'UPDATE accounts SET profit_split_pct = 80, last_payout_day = ?, payout_currency = ? WHERE id = ?', addDays(bneToday(now), -21), 'AUD', m.id),
     stmt(db, "UPDATE accounts SET profit_split_pct = 80, payout_currency = 'AUD' WHERE id IN (?, ?)", c1.id, c2.id),
+    // risk limits: 0.6% per idea on the funded account, 1% on the challenges
+    stmt(db, 'UPDATE accounts SET max_risk_trade_pct = 0.6, max_risk_day_pct = 1.5 WHERE id = ?', m.id),
+    stmt(db, 'UPDATE accounts SET max_risk_trade_pct = 1, max_risk_day_pct = 3 WHERE id IN (?, ?)', c1.id, c2.id),
   ]);
   await db.batch(PREP.map((l, i) => stmt(db, 'INSERT INTO prep_items (label, sort, is_sample, created_at) VALUES (?,?,1,?)', l, i, t)));
 
@@ -168,6 +172,12 @@ export async function seedSample(db, now = Date.now()) {
   const handOpen = bneDayStart(mDay) + (11 * 60 + 5) * 60000;
   copies[0].deals.push(deal(copies[0].ticket++, copies[0].pos, handOpen, 1, 0, 'NAS100', 2, 21410, 0, -0.7, 21440, 60, '', 1));
   copies[0].deals.push(deal(copies[0].ticket++, copies[0].pos++, handOpen + 35 * 60000, 0, 1, 'NAS100', 2, 21395, 30, -0.7, 0, null, '', 1));
+
+  // market sentiment set in daily prep (most days)
+  const BIAS = ['bull', 'bull', 'bear', 'neutral', null];
+  await db.batch(days.map((d) => { const b = BIAS[Math.floor(rand() * BIAS.length)];
+    return stmt(db, 'INSERT OR REPLACE INTO prep_sentiment (day, is_sample, overall, markets, basis, note, updated_at) VALUES (?,1,?,?,?,?,?)',
+      d, b, JSON.stringify(b ? { JP225: b, NAS100: rand() < 0.7 ? b : 'neutral' } : {}), JSON.stringify(['US futures', 'VIX']), null, bneDayStart(d) + 8 * 3600000); }));
 
   const net = (ds) => ds.reduce((a, x) => a + x.profit + x.commission + x.swap + x.fee, 0);
   const upload = async (acct, deals, size) => {

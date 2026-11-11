@@ -4,6 +4,7 @@ import { all, first, run, stmt, audit, getSettings, getAliases, sha256Hex, rando
 import { requireUser } from './auth.js';
 import { handleIngest, groupAccount, processUpload } from './ingest.js';
 import { newShareToken } from './share.js';
+import { sentimentByDay } from './sentiment.js';
 import { resolveScope, loadIdeas, aggregate } from './ideas.js';
 import { summary, drawdown, groupSummary, rBuckets, behaviour, sessionOf } from './stats.js';
 import { bneDay, bneDayStart, bneToday, addDays, bneMonthRange } from './time.js';
@@ -75,7 +76,7 @@ on('GET', '/bootstrap', async ({ db, sample, user, env }) => {
     all(db, `SELECT id, firm_id, name, login, server, broker, currency, kind, phase, size, role, master_account_id, daily_loss_pct,
       max_loss_pct, max_loss_type, profit_target_pct, token_hint, last_seen, last_deal_msc, connector_version, server_offset_sec,
       tz_mode, balance, equity, status, created_at, daily_reset_tz, daily_reset_time, daily_loss_of, daily_loss_from,
-      profit_split_pct, last_payout_day, payout_currency
+      profit_split_pct, last_payout_day, payout_currency, max_risk_trade_pct, max_risk_day_pct
       FROM accounts WHERE is_sample = ? ORDER BY id`, sample),
     all(db, 'SELECT * FROM strategies WHERE is_sample = ? ORDER BY archived, name', sample),
     all(db, 'SELECT * FROM mistakes ORDER BY active DESC, label'),
@@ -119,6 +120,22 @@ on('PUT', '/settings', async ({ db, request }) => {
     if (c && !/^-?\d{1,20}$/.test(c)) throw new HttpError(400, 'Telegram chat id is a number');
     ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'telegram_chat_id', c));
   }
+  if (b.risk_tolerance_pct != null) {
+    const v = Number(b.risk_tolerance_pct);
+    if (!(v >= 0 && v <= 50)) throw new HttpError(400, 'Tolerance is 0 to 50%');
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'risk_tolerance_pct', String(v)));
+  }
+  if (b.link_accounts != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'link_accounts', b.link_accounts ? '1' : '0'));
+  if (b.link_window_min != null) {
+    const v = Number(b.link_window_min);
+    if (!(v >= 1 && v <= 120)) throw new HttpError(400, 'Linking window is 1 to 120 minutes');
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'link_window_min', String(v)));
+  }
+  for (const k of ['sentiment_markets', 'sentiment_basis']) if (b[k] != null) {
+    const list = String(b[k]).split(',').map((x) => x.trim().slice(0, 30)).filter(Boolean).slice(0, 12);
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', k, list.join(',')));
+  }
+  if (b.sentiment_prompt != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'sentiment_prompt', String(b.sentiment_prompt).slice(0, 8000)));
   if (b.saved_filters != null) {
     if (!Array.isArray(b.saved_filters) || b.saved_filters.length > 40) throw new HttpError(400, 'Up to 40 saved filters');
     const list = b.saved_filters.map((f) => ({ name: String(f && f.name || '').trim().slice(0, 60), f: f && typeof f.f === 'object' ? f.f : {} })).filter((f) => f.name);
@@ -185,13 +202,14 @@ on('DELETE', '/firms/:id', async ({ db, params }) => {
 
 const ACCOUNT_FIELDS = ['firm_id', 'name', 'login', 'server', 'currency', 'kind', 'phase', 'size', 'role', 'master_account_id',
   'daily_loss_pct', 'max_loss_pct', 'max_loss_type', 'profit_target_pct', 'tz_mode', 'status',
-  'daily_reset_tz', 'daily_reset_time', 'daily_loss_of', 'daily_loss_from', 'profit_split_pct', 'last_payout_day', 'payout_currency'];
+  'daily_reset_tz', 'daily_reset_time', 'daily_loss_of', 'daily_loss_from', 'profit_split_pct', 'last_payout_day', 'payout_currency', 'max_risk_trade_pct', 'max_risk_day_pct'];
 const RESET_TZS = ['server', 'UTC', 'America/New_York', 'Europe/London', 'Europe/Prague', 'Australia/Brisbane', 'Australia/Sydney', 'Asia/Dubai', 'Asia/Jerusalem'];
 
 function cleanAccount(b) {
   const o = {};
   for (const k of ACCOUNT_FIELDS) if (k in b) o[k] = b[k] === '' ? null : b[k];
-  for (const k of ['size', 'daily_loss_pct', 'max_loss_pct', 'profit_target_pct', 'profit_split_pct']) if (k in o) o[k] = optNum(o[k]);
+  for (const k of ['size', 'daily_loss_pct', 'max_loss_pct', 'profit_target_pct', 'profit_split_pct', 'max_risk_trade_pct', 'max_risk_day_pct']) if (k in o) o[k] = optNum(o[k]);
+  for (const k of ['max_risk_trade_pct', 'max_risk_day_pct']) if (o[k] != null && !(o[k] > 0 && o[k] <= 100)) throw new HttpError(400, 'Risk limits are a % of the account size, above 0 and up to 100');
   if (o.profit_split_pct != null && !(o.profit_split_pct >= 0 && o.profit_split_pct <= 100)) throw new HttpError(400, 'Profit split is 0 to 100%');
   if (o.last_payout_day != null && !/^\d{4}-\d{2}-\d{2}$/.test(o.last_payout_day)) throw new HttpError(400, 'Last payout date is YYYY-MM-DD');
   if ('payout_currency' in o && !['AUD', 'NZD', 'USD'].includes(o.payout_currency)) throw new HttpError(400, 'Payout currency is AUD, NZD or USD');
@@ -288,6 +306,14 @@ on('GET', '/dashboard', async ({ db, sample, q }) => {
   });
   const props = await loadPropStatus(db, scoped, Number((await getSettings(db)).raw.warn_pct) || 70, now);
   for (const a of accounts) a.prop = props.find((p) => p.account_id === a.id) || null;
+  // risk taken today against each account's daily limit
+  for (const a of accounts) {
+    const used = ideas.filter((i) => bneDay(i.open_time) === today).flatMap((i) => i.risk_checks || []).filter((c) => c.account_id === a.id);
+    const last = used.reduce((m, c) => (c.dayUsed > (m ? m.dayUsed : -1) ? c : m), null);
+    const acc = scope.accounts.find((x) => x.id === a.id) || {};
+    a.riskToday = { used: last ? last.dayUsed : 0, limit: acc.max_risk_day_pct && acc.size ? round(acc.size * acc.max_risk_day_pct / 100, 2) : null,
+      tradeLimit: acc.max_risk_trade_pct && acc.size ? round(acc.size * acc.max_risk_trade_pct / 100, 2) : null, level: last ? last.dayLevel : null };
+  }
   const ddWorst = accounts.reduce((w, a) => (!w || a.drawdown.maxDdPct > w.drawdown.maxDdPct ? a : w), null);
 
   // today's preparation (one shared list) and what each account would pay out now
@@ -345,6 +371,19 @@ on('GET', '/ideas/:id', async ({ db, params, sample }) => {
   ]);
   const links = await all(db, 'SELECT * FROM idea_links WHERE idea_id = ? ORDER BY id', ideaId);
   const agg = aggregate(idea, positions, null);
+  let riskInfo = { checks: [], violation: false, dayViolation: false }, sentimentInfo = { bias: null, align: 'unset', day: null };
+  if (agg) {
+    const dayStart = bneDayStart(bneDay(agg.open_time));
+    const sameDay = (await all(db, `SELECT DISTINCT p.idea_id FROM positions p JOIN ideas i ON i.id = p.idea_id
+      WHERE i.is_sample = ? AND p.open_time >= ? AND p.open_time < ?`, sample, dayStart, dayStart + DAY)).map((r) => r.idea_id);
+    const dayIdeas = await loadIdeas(db, { sample, scope: await resolveScope(db, sample, { archived: '1' }), ideaIds: [...new Set([...sameDay, ideaId])] });
+    const me = dayIdeas.find((x) => x.id === ideaId);
+    if (me) {
+      riskInfo = { checks: me.risk_checks || [], violation: !!me.risk_violation, dayViolation: !!me.day_violation, tolerancePct: settings.riskTolerancePct };
+      sentimentInfo = { bias: me.bias, align: me.align, day: bneDay(agg.open_time),
+        sentiment: (await sentimentByDay(db, sample, bneDay(agg.open_time), bneDay(agg.open_time))).get(bneDay(agg.open_time)) || null };
+    }
+  }
   const lead = positions.filter((p) => p.account_id === idea.account_id);
   // nearby lead positions on the same account that are NOT in this idea (for "Add position")
   const t0 = agg ? agg.open_time : Date.now();
@@ -355,6 +394,7 @@ on('GET', '/ideas/:id', async ({ db, params, sample }) => {
   const checked = new Set(checks.filter((c) => c.checked).map((c) => c.item_id));
   return {
     idea: { ...idea, ...agg },
+    risk: riskInfo, sentiment: sentimentInfo,
     positions: positions.map((p) => ({ ...p, net: netOf(p), r: p.risk > 0 ? round(netOf(p) / p.risk, 2) : null })),
     checklist: items.map((it) => ({ id: it.id, label: it.label, checked: checked.has(it.id) })),
     mistakes: mist.map((m) => m.mistake_id),
@@ -470,6 +510,28 @@ on('POST', '/positions/:id/unlink', async ({ db, params, sample }) => {
 });
 
 // Merge idea :other into idea :id (same account, symbol, direction).
+// Take one account out of a linked idea (the same trade placed by hand on another account): its positions,
+// and their copies, become an idea of their own.
+on('POST', '/ideas/:id/unlink', async ({ db, params, request, sample }) => {
+  const b = await request.json();
+  const ideaId = id(params.id), acct = id(b.account_id);
+  const idea = await first(db, 'SELECT * FROM ideas WHERE id = ? AND is_sample = ?', ideaId, sample);
+  if (!idea) throw new HttpError(404, 'Idea not found');
+  if (idea.account_id === acct) throw new HttpError(400, 'That is the lead account. Unlink the other accounts instead.');
+  const own = await all(db, 'SELECT id, position_id FROM positions WHERE idea_id = ? AND account_id = ? AND master_pos IS NULL', ideaId, acct);
+  if (!own.length) throw new HttpError(400, 'That account has no positions of its own in this idea (copies follow their Master).');
+  const now = Date.now();
+  const r = await run(db, 'INSERT INTO ideas (account_id, symbol, direction, is_sample, created_at, updated_at) VALUES (?,?,?,?,?,?)', acct, idea.symbol, idea.direction, sample, now, now);
+  const newId = r.meta.last_row_id, ids = JSON.stringify(own.map((p) => p.id));
+  await db.batch([
+    stmt(db, "UPDATE positions SET idea_id = ?, copy_link = NULL, group_mode = 'manual' WHERE id IN (SELECT value FROM json_each(?))", newId, ids),
+    stmt(db, 'UPDATE positions SET idea_id = ? WHERE idea_id = ? AND master_pos IN (SELECT value FROM json_each(?))', newId, ideaId, ids),
+    audit(db, { actor: 'user', account_id: acct, idea_id: ideaId, action: 'Account unlinked', detail: `${own.length} position(s) moved to idea #${newId}` }),
+    audit(db, { actor: 'user', account_id: acct, idea_id: newId, action: 'Idea created', detail: `unlinked from idea #${ideaId}` }),
+  ]);
+  return { ok: true, id: newId };
+});
+
 on('POST', '/ideas/:id/merge', async ({ db, params, request, sample }) => {
   const ideaId = id(params.id);
   const b = await request.json();
@@ -678,9 +740,10 @@ on('GET', '/analytics/ideas', async ({ db, sample, q }) => {
       id: i.id, open_time: i.open_time, close_time: i.close_time, symbol: i.symbol, direction: i.direction,
       strategy_id: i.strategy_id, strategy: i.strategy_name || 'No strategy', r: i.r, net: i.net, basisNet: i.basisNet, costs: i.costs,
       rating: i.rating, mistakes: i.mistakes, reviewed: i.reviewed, positions: i.lead_positions,
-      ckTotal: i.checklistTotal, ckDone: i.checklistDone, missed: i.checklistMissed || [],
+      ckTotal: i.checklistTotal, ckDone: i.checklistDone, missed: [...(i.checklistMissed || []), ...(i.risk_violation ? ['risk_trade'] : []), ...(i.day_violation ? ['risk_day'] : [])],
+      autoViolation: !!(i.risk_violation || i.day_violation), align: i.align, bias: i.bias,
     })),
-    mistakes, rules: items, saved: (() => { try { return JSON.parse(saved?.value || '[]'); } catch { return []; } })(),
+    mistakes, rules: [...items, { id: 'risk_trade', label: 'Risk per idea within limit (auto)' }, { id: 'risk_day', label: 'Daily risk within limit (auto)' }], saved: (() => { try { return JSON.parse(saved?.value || '[]'); } catch { return []; } })(),
   };
 });
 
@@ -758,18 +821,39 @@ async function prepState(db, sample, day) {
   ]);
   const checked = new Set(checks.filter((c) => c.checked).map((c) => c.item_id));
   const its = items.map((i) => ({ id: i.id, label: i.label, checked: checked.has(i.id) }));
-  return { day, items: its, done: its.filter((i) => i.checked).length, total: its.length };
+  const settings = await getSettings(db);
+  const sent = (await sentimentByDay(db, sample, day, day)).get(day) || null;
+  const done = its.filter((i) => i.checked).length;
+  return { day, items: its, done, total: its.length, sentiment: sent,
+    sentimentOptions: { markets: settings.sentimentMarkets, basis: settings.sentimentBasis, prompt: settings.raw.sentiment_prompt || '' },
+    ready: done === its.length && !!(sent && sent.overall) };
 }
+
+on('PUT', '/prep/sentiment', async ({ db, request, sample }) => {
+  const b = await request.json();
+  const today = bneToday();
+  if (b.day && b.day !== today) throw new HttpError(409, `Past days are read-only. Today in Brisbane is ${today}.`);
+  const ok = (v) => v == null || ['bull', 'neutral', 'bear'].includes(v);
+  if (!ok(b.overall)) throw new HttpError(400, 'Sentiment is bull, neutral or bear');
+  const markets = {};
+  for (const [k, v] of Object.entries(b.markets || {})) { if (!ok(v)) throw new HttpError(400, 'Sentiment is bull, neutral or bear'); if (v) markets[String(k).slice(0, 30)] = v; }
+  const basis = Array.isArray(b.basis) ? b.basis.map((x) => String(x).slice(0, 40)).slice(0, 20) : [];
+  await run(db, `INSERT INTO prep_sentiment (day, is_sample, overall, markets, basis, note, updated_at) VALUES (?,?,?,?,?,?,?)
+    ON CONFLICT (day, is_sample) DO UPDATE SET overall = excluded.overall, markets = excluded.markets, basis = excluded.basis, note = excluded.note, updated_at = excluded.updated_at`,
+    today, sample, b.overall || null, JSON.stringify(markets), JSON.stringify(basis), txt(b.note, 500), Date.now());
+  return { ok: true, day: today };
+});
 
 on('GET', '/prep', async ({ db, sample, q }) => {
   const today = bneToday();
   const day = /^\d{4}-\d{2}-\d{2}$/.test(q.day || '') ? q.day : today;
   if (day === today) return { ...(await prepState(db, sample, day)), today, editable: true };
+  const sentiment = (await sentimentByDay(db, sample, day, day)).get(day) || null;
   // a past day: exactly what was recorded that day (labels as they were), read-only
   const rows = await all(db, `SELECT c.item_id, c.label, c.checked FROM prep_checks c JOIN prep_items p ON p.id = c.item_id
     WHERE c.day = ? AND p.is_sample = ? ORDER BY p.sort, p.id`, day, sample);
   const its = rows.map((r) => ({ id: r.item_id, label: r.label, checked: !!r.checked }));
-  return { day, today, editable: false, items: its, done: its.filter((i) => i.checked).length, total: its.length };
+  return { day, today, editable: false, items: its, done: its.filter((i) => i.checked).length, total: its.length, sentiment };
 });
 
 on('PUT', '/prep', async ({ db, request, sample }) => {
