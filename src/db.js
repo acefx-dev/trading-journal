@@ -13,9 +13,10 @@ export async function getSettings(db) {
     requireOverlap: (s.group_require_overlap ?? '1') === '1',
     copyMatchWindowSec: Number(s.copy_match_window_sec ?? 60),
     riskTolerancePct: Number(s.risk_tolerance_pct ?? 3),
+    riskGraceSec: Number(s.risk_grace_sec ?? 60),
     linkAccounts: (s.link_accounts ?? '1') === '1',
     linkWindowMin: Number(s.link_window_min ?? 5),
-    sentimentMarkets: String(s.sentiment_markets ?? 'JP225,NAS100').split(',').map((x) => x.trim()).filter(Boolean),
+    sentimentMarkets: String(s.sentiment_markets ?? '').split(',').map((x) => x.trim()).filter(Boolean),
     sentimentBasis: String(s.sentiment_basis ?? 'US futures,Nikkei futures,VIX,USDJPY,Headlines').split(',').map((x) => x.trim()).filter(Boolean),
     raw: s,
   };

@@ -142,7 +142,7 @@ function Connector({ a, onConnect, onImport }) {
   return html`<div class="stack" style="gap:14px">
     <div class="box hstack" style="flex-wrap:nowrap;gap:10px"><span class="dot" style=${`background:${!a.token_hint ? 'var(--dim)' : on ? 'var(--pos)' : 'var(--amber)'}`}></span>
       <div style="flex:1"><div style="font-size:13px;font-weight:600">${!a.token_hint ? 'Not connected yet' : on ? 'Online' : 'Offline'}${a.token_hint ? ' · last contact ' + fmt.ago(a.last_seen) : ''}</div>
-        <div class="sub">${a.connector_version ? 'TradeJournalConnector ' + a.connector_version + ' · ' : ''}read-only${a.server_offset_sec != null ? ` · server UTC${a.server_offset_sec >= 0 ? '+' : '−'}${Math.abs(a.server_offset_sec / 3600)}` : ''}${a.token_hint ? ' · token …' + a.token_hint : ''}</div></div></div>
+        <div class="sub">${a.connector_version ? 'TradeJournalConnector ' + a.connector_version + (a.connector_version < '1.02' ? ' (update to 1.02 for stop moves and drawdown)' : '') + ' · ' : ''}read-only${a.server_offset_sec != null ? ` · server UTC${a.server_offset_sec >= 0 ? '+' : '−'}${Math.abs(a.server_offset_sec / 3600)}` : ''}${a.token_hint ? ' · token …' + a.token_hint : ''}</div></div></div>
     <div class="hstack"><button class=${cls('btn sm', !a.token_hint && 'pri')} onClick=${onConnect}>${a.token_hint ? 'Connection details / new token' : 'Connect this account'}</button>
       <button class="btn sm" onClick=${onImport}>Import MT5 statement</button></div>
     <div class="field"><span class="cap">Sync log · this account</span>

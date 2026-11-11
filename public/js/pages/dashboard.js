@@ -222,15 +222,15 @@ export function SentimentBlock({ prep, editable = true, onSaved }) {
       .replaceAll('{markets}', opts.markets.join(', '));
     try { await navigator.clipboard.writeText(text); toast('Prompt copied'); } catch { prompt('Copy your prompt', text); }
   };
-  const row = (label, cur, onPick, aria) => html`<div style="display:grid;grid-template-columns:62px repeat(3,minmax(0,1fr));gap:4px;align-items:center" role="group" aria-label=${aria}>
-    <span style="font-size:12px;font-weight:600">${label}</span>
+  const row = (label, cur, onPick, aria) => html`<div style=${`display:grid;grid-template-columns:${label ? '62px ' : ''}repeat(3,minmax(0,1fr));gap:4px;align-items:center`} role="group" aria-label=${aria}>
+    ${label && html`<span style="font-size:12px;font-weight:600">${label}</span>`}
     ${SENT.map(([k, l, ic]) => { const on = cur === k; return html`<button type="button" class="btn sm" disabled=${!editable} aria-pressed=${on} style=${`min-height:26px;padding:0 4px;justify-content:center;font-size:11.5px;${on ? SENT_STYLE[k] : 'color:var(--mut)'}`}
       onClick=${() => onPick(on ? null : k)}>${ic} ${l}</button>`; })}</div>`;
   return html`<div class="stack" style="gap:4px">
-    <div class="spread"><span class="cap" style="color:#C9D8FF">1 · Sentiment</span>
+    <div class="spread"><span class="cap" style="color:#C9D8FF">1 · Market sentiment</span>
       ${opts.prompt ? html`<button type="button" class="btn sm ghost" style="min-height:22px;padding:0 6px;font-size:11.5px;color:#9DB8FF" onClick=${copy} title="Copy your sentiment prompt to paste into Claude"><${Icon} name="copy" size=${13}/>Copy prompt</button>`
         : html`<a href="#/strategies" style="font-size:11.5px" title="Save the prompt you use to check sentiment">Add your prompt</a>`}</div>
-    ${row('Overall', v.overall, (k) => save({ ...v, overall: k }), 'Overall market sentiment')}
+    ${row(opts.markets.length ? 'Overall' : null, v.overall, (k) => save({ ...v, overall: k }), 'Overall market sentiment')}
     ${opts.markets.map((mk) => row(mk, v.markets[mk], (k) => save({ ...v, markets: { ...v.markets, [mk]: k } }), mk + ' bias'))}
   </div>`;
 }

@@ -296,5 +296,32 @@ await api('PUT', '/prep/sentiment', { overall: null, markets: {}, basis: [] });
 const dsh = await api('GET', `/dashboard?acct=${fpA.id}`);
 assert.ok(dsh.accounts[0].riskToday && dsh.accounts[0].riskToday.limit === 750, 'daily risk on the dashboard');
 
+// 22. v1.6 trade path (connector 1.02): a scale-in whose first stop is moved 20 s later → risk = peak held, not the sum
+const T2 = now - (200 + Number(uniq) % 100) * 60000;
+const pA = 88100000 + Number(uniq) % 1000, pB = pA + 1;
+const dA = { ticket: 91000000 + Number(uniq) % 1000, order: pA, position: pA, time: srv(T2), type: 0, entry: 0, symbol: 'JP225', volume: 1, price: 50000, profit: 0, commission: 0, swap: 0, fee: 0, sl: 49700, tp: 0, risk: 300, magic: 0, reason: 0, comment: '' };
+const dB = { ...dA, ticket: dA.ticket + 1, order: pB, position: pB, time: srv(T2 + 600000), volume: 0.6, price: 50100, sl: 49790, risk: 188.28 };
+const outA = out(dA.ticket + 2, pA, T2 + 3600000, 1, 'JP225', 1, 50400, 400), outB = out(dA.ticket + 3, pB, T2 + 3600000, 1, 'JP225', 0.6, 50400, 180);
+const ev = [{ position: pA, t: srv(T2 + 1000), sl: 49700, volume: 1, risk: 300 }, { position: pB, t: srv(T2 + 601000), sl: 49790, volume: 0.6, risk: 188.28 },
+  { position: pA, t: srv(T2 + 620000), sl: 49888.28, volume: 1, risk: 111.72 }];
+const ep = [{ symbol: 'JP225', type: 0, start: srv(T2), end: srv(T2 + 3600000), ids: [pA, pB], mae: -75, mae_t: srv(T2 + 300000), mfe: 650, mfe_t: srv(T2 + 3000000), partial: 0 }];
+r = await api('POST', '/ingest', { v: 1, connector: '1.02', login: '5' + uniq, server: 'Sim-Live', company: 'Sim Broker', currency: 'USD', offset_sec: OFF + 3, positions_complete: false,
+  deals: [dA, dB, outA, outB], positions: [], path: { events: ev, episodes: ep } }, { Authorization: 'Bearer ' + tokFP });
+assert.equal(r.ok, true);
+const scaled = (await api('GET', `/ideas?acct=${fpA.id}&limit=50`)).items.find((x) => x.symbol === 'JP225' && x.open_time < T2 + 1000 && x.open_time > T2 - 1000);
+assert.ok(scaled, 'scale-in idea');
+const sd = await api('GET', `/ideas/${scaled.id}`);
+const la = sd.idea.accounts[0];
+assert.equal(la.risk, 300, 'risk = peak held (the 20 s spike to 488.28 is ignored)');
+assert.equal(la.initialRisk, 488.28);
+assert.equal(la.r, round(580 / 300));
+assert.equal(la.path.mae_r, -0.25); assert.equal(la.path.mfe_r, round(650 / 300));
+assert.equal(sd.risk.violation, false, '300 on a 300 limit is fine');
+assert.ok(sd.tradePath[0].steps.length >= 5, 'risk timeline');
+// resending the same path doesn't duplicate, and a lower mae later wins
+r = await api('POST', '/ingest', { v: 1, connector: '1.02', login: '5' + uniq, offset_sec: OFF + 3, positions_complete: false, deals: [], positions: [],
+  path: { events: ev, episodes: [{ ...ep[0], mae: -90, mae_t: srv(T2 + 400000) }] } }, { Authorization: 'Bearer ' + tokFP });
+assert.equal((await api('GET', `/ideas/${scaled.id}`)).idea.accounts[0].path.mae_r, -0.3);
+
 console.log('connector simulation: all checks passed');
 function round(x) { return Math.round(x * 100) / 100; }

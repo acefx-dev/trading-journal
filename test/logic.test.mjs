@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { peakRisk, combineEpisodes } from '../src/path.js';
 import { bneDay, bneDayStart, serverToUtc, usDst, bneMonthRange, addDays } from '../src/time.js';
 import { canonical, coreMatch, parseCopyComment } from '../src/symbols.js';
 import { buildPosition, netOf } from '../src/build.js';
@@ -262,4 +263,29 @@ test('trading with or against the day\'s sentiment', () => {
   assert.deepEqual(alignOf('NAS100', 'short', s), { bias: 'bull', align: 'against' });
   assert.deepEqual(alignOf('NAS100', 'long', { overall: 'neutral', markets: {} }), { bias: 'neutral', align: 'neutral' });
   assert.deepEqual(alignOf('NAS100', 'long', null), { bias: null, align: 'unset' });
+});
+
+test('peak combined risk ignores a short spike while the first stop is moved', () => {
+  const T = 1_800_000_000_000, S = 1000;
+  const ps = [{ position_id: 1, open_time: T, close_time: T + 3600 * S, risk: 300 }, { position_id: 2, open_time: T + 600 * S, close_time: T + 3600 * S, risk: 188.28 }];
+  const ev = [{ position_id: 1, t: T + S, risk: 300 }, { position_id: 2, t: T + 601 * S, risk: 188.28 }, { position_id: 1, t: T + 630 * S, risk: 111.72 }];
+  const r = peakRisk(ps, ev, 60 * S);
+  assert.equal(r.initial, 488.28);
+  assert.equal(r.transient, 488.28);   // 30 s spike after the add
+  assert.equal(r.peak, 300);           // what was held: 300, then 111.72 + 188.28
+  // the same spike held for 5 minutes counts
+  const ev2 = [ev[0], ev[1], { position_id: 1, t: T + 900 * S, risk: 111.72 }];
+  assert.equal(peakRisk(ps, ev2, 60 * S).peak, 488.28);
+  // stop moved to break-even: risk 0 after that; peak stays at 300
+  assert.equal(peakRisk([ps[0]], [ev[0], { position_id: 1, t: T + 120 * S, risk: 0 }], 60 * S).peak, 300);
+  // a position the connector never saw → no answer (falls back to the initial stops)
+  assert.equal(peakRisk(ps, [ev[0]], 60 * S), null);
+  // no S/L at first, added after 10 s
+  const r3 = peakRisk([{ position_id: 3, open_time: T, close_time: T + 600 * S, risk: null }], [{ position_id: 3, t: T + 2 * S, risk: null }, { position_id: 3, t: T + 10 * S, risk: 250 }], 60 * S);
+  assert.equal(r3.peak, 250); assert.equal(r3.initial, null);
+});
+
+test('episodes combine into the lowest and highest combined P&L', () => {
+  const c = combineEpisodes([{ mae: -50, mae_t: 5, mfe: 120, mfe_t: 9, end_t: 10 }, { mae: -80, mae_t: 15, mfe: 60, mfe_t: 12, end_t: null, partial: 1 }]);
+  assert.deepEqual(c, { mae: -80, mae_t: 15, mfe: 120, mfe_t: 9, partial: true, open: true });
 });

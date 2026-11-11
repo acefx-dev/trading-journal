@@ -143,6 +143,9 @@ export async function processUpload(db, account, body, now = Date.now()) {
     }
   }
 
+  // ---- 3b. trade path from connector 1.02: stop-loss changes and drawdown/best point episodes ----
+  if (body.path && typeof body.path === 'object') await storePath(db, account.id, body.path, toUtc, now);
+
   // ---- 4. group new positions into ideas ----
   const grouped = affected.size ? await groupAccount(db, account, [...affected], now) : { created: 0, joined: 0, linked: 0 };
 
@@ -335,3 +338,30 @@ async function linkCopies(db, account, rows, settings, aliases, now) {
 }
 
 export { round };
+
+/** Store the connector's trade path data (insert-only events; episodes are updated as they grow). */
+export async function storePath(db, accountId, path, toUtc, now = Date.now()) {
+  const events = (Array.isArray(path.events) ? path.events : []).slice(0, 2000).map((e) => ({
+    position: int(e.position), t: toUtc(e.t), sl: num(e.sl), volume: num(e.volume), risk: e.risk == null ? null : num(e.risk),
+  })).filter((e) => e.position && isFinite(e.t));
+  const eps = (Array.isArray(path.episodes) ? path.episodes : []).slice(0, 500).map((e) => ({
+    symbol: str(e.symbol, 32), direction: int(e.type) === 1 ? 'short' : 'long', start: toUtc(e.start), end: int(e.end) ? toUtc(e.end) : null,
+    ids: JSON.stringify((Array.isArray(e.ids) ? e.ids : []).map(int).filter(Boolean).slice(0, 200)),
+    mae: num(e.mae), mae_t: int(e.mae_t) ? toUtc(e.mae_t) : null, mfe: num(e.mfe), mfe_t: int(e.mfe_t) ? toUtc(e.mfe_t) : null, partial: e.partial ? 1 : 0,
+  })).filter((e) => e.symbol && isFinite(e.start));
+  const ops = [];
+  if (events.length) ops.push(stmt(db, `INSERT OR IGNORE INTO sl_events (account_id, position_id, t, sl, volume, risk)
+    SELECT ?1, v->>'position', v->>'t', v->>'sl', v->>'volume', v->>'risk' FROM (SELECT value AS v FROM json_each(?2))`, accountId, JSON.stringify(events)));
+  if (eps.length) ops.push(stmt(db, `INSERT INTO path_episodes (account_id, symbol, direction, start_t, end_t, position_ids, mae, mae_t, mfe, mfe_t, partial, updated_at)
+    SELECT ?1, v->>'symbol', v->>'direction', v->>'start', v->>'end', v->>'ids', v->>'mae', v->>'mae_t', v->>'mfe', v->>'mfe_t', v->>'partial', ?2
+    FROM (SELECT value AS v FROM json_each(?3)) WHERE true
+    ON CONFLICT (account_id, symbol, direction, start_t) DO UPDATE SET
+      end_t = COALESCE(excluded.end_t, path_episodes.end_t), position_ids = excluded.position_ids,
+      mae = CASE WHEN path_episodes.mae IS NULL OR excluded.mae < path_episodes.mae THEN excluded.mae ELSE path_episodes.mae END,
+      mae_t = CASE WHEN path_episodes.mae IS NULL OR excluded.mae < path_episodes.mae THEN excluded.mae_t ELSE path_episodes.mae_t END,
+      mfe = CASE WHEN path_episodes.mfe IS NULL OR excluded.mfe > path_episodes.mfe THEN excluded.mfe ELSE path_episodes.mfe END,
+      mfe_t = CASE WHEN path_episodes.mfe IS NULL OR excluded.mfe > path_episodes.mfe THEN excluded.mfe_t ELSE path_episodes.mfe_t END,
+      partial = MAX(path_episodes.partial, excluded.partial), updated_at = excluded.updated_at`, accountId, now, JSON.stringify(eps)));
+  if (ops.length) await db.batch(ops);
+  return { events: events.length, episodes: eps.length };
+}

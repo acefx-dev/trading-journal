@@ -35,7 +35,7 @@ function DefaultView({ b }) {
 
 function Grouping({ b }) {
   const [v, setV] = useState({ group_window_min: b.settings.group_window_min, group_require_overlap: b.settings.group_require_overlap === '1', copy_match_window_sec: b.settings.copy_match_window_sec,
-    link_accounts: b.settings.link_accounts !== '0', link_window_min: b.settings.link_window_min || '5', risk_tolerance_pct: b.settings.risk_tolerance_pct ?? '3' });
+    link_accounts: b.settings.link_accounts !== '0', link_window_min: b.settings.link_window_min || '5', risk_tolerance_pct: b.settings.risk_tolerance_pct ?? '3', risk_grace_sec: b.settings.risk_grace_sec ?? '60' });
   const save = async (e) => { e.preventDefault(); try { await api('/settings', { method: 'PUT', body: v }); await reloadBoot(); toast('Saved. New trades use these rules.'); } catch (err) { toast(err.message, true); } };
   return html`<section class="card stack"><h2 class="h2">Trade grouping</h2>
     <div class="sub">How positions become one trading idea. Applies to trades synced from now on; ideas you changed by hand are never regrouped.</div>
@@ -52,9 +52,10 @@ function Grouping({ b }) {
         <span>Link a trade placed by hand on another account (not a copier copy) to the same idea, so you review it once</span></label>
       <div class="fields">
         <div class="field"><label class="lbl" for="lw">Linking window (minutes between the two entries)</label><input id="lw" class="inp" type="number" min="1" max="120" disabled=${!v.link_accounts} value=${v.link_window_min} onInput=${(e) => setV({ ...v, link_window_min: e.target.value })}/></div>
+        <div class="field"><label class="lbl" for="rg">Ignore a higher combined risk lasting under (seconds)</label><input id="rg" class="inp" type="number" min="0" max="900" value=${v.risk_grace_sec} onInput=${(e) => setV({ ...v, risk_grace_sec: e.target.value })}/></div>
         <div class="field"><label class="lbl" for="rt">Risk limit tolerance for slippage (%)</label><input id="rt" class="inp" type="number" min="0" max="50" step="0.5" value=${v.risk_tolerance_pct} onInput=${(e) => setV({ ...v, risk_tolerance_pct: e.target.value })}/></div>
       </div>
-      <div class="sub">Linking needs the same instrument and direction. Copier copies are always linked by their TC: comment. Use “Separate” on an idea's Positions tab if two trades were linked by mistake. With a ${v.risk_tolerance_pct || 0}% tolerance, a $300 limit is a violation above $${(300 * (1 + Number(v.risk_tolerance_pct || 0) / 100)).toFixed(0)}.</div>
+      <div class="sub">Linking needs the same instrument and direction. Copier copies are always linked by their TC: comment. Use “Separate” on an idea's Positions tab if two trades were linked by mistake. With a ${v.risk_tolerance_pct || 0}% tolerance, a $300 limit is a violation above $${(300 * (1 + Number(v.risk_tolerance_pct || 0) / 100)).toFixed(0)}. With connector 1.02, a scale-in whose combined risk is back within the limit in under ${v.risk_grace_sec || 0} s (because you moved the first stop) isn't counted at the higher amount.</div>
       <div><button class="btn pri" type="submit">Save</button></div>
     </form></section>`;
 }

@@ -246,6 +246,13 @@ function Results({ L, S, groupBy, setGroupBy, curve, setCurve }) {
   segs.filter((g) => g.avg < 0).slice(-2).reverse().forEach((g) => ins.push({ tag: 'Leak', c: 'r', title: `${g.dim}: ${g.label}`, sub: `${g.n} ideas · ${fmt.rate(g.win)} win · ${fR(g.tot)} total`, v: fR(g.avg) }));
   const ok = stat(L.filter((x) => x.comp === 'ok')), bad = stat(L.filter((x) => x.comp === 'viol'));
   const sw = stat(L.filter((x) => x.align === 'with')), sa = stat(L.filter((x) => x.align === 'against'));
+  // trade path (connector 1.02): heat on winners, how far losers went your way, how much of the best you kept
+  const P = L.filter((x) => x.mae != null && x.r != null);
+  const avg = (xs) => (xs.length ? xs.reduce((a, v) => a + v, 0) / xs.length : null);
+  const pw = P.filter((x) => x.r > 0), pl = P.filter((x) => x.r < 0);
+  const tp = { n: P.length, heat: avg(pw.map((x) => Math.min(0, x.mae))), deep: pw.filter((x) => x.mae <= -0.5).length,
+    lossBest: avg(pl.map((x) => Math.max(0, x.mfe || 0))), lossHit1: pl.filter((x) => (x.mfe || 0) >= 1).length,
+    kept: avg(pw.filter((x) => x.mfe > 0).map((x) => Math.min(1, x.r / x.mfe))) };
   if (bad.n) ins.push({ tag: 'Rules', c: 'a', title: 'Ideas with a broken rule', sub: `${bad.n} of ${S.n} ideas · ${fR(bad.tot)} in total`, v: fR(bad.avg) });
   // heatmap: weekday × entry hour (only hours with trades), trading-day order from 05:00
   const hrs = [...new Set(L.map((x) => x.hour))].sort((a, b) => ((a + 19) % 24) - ((b + 19) % 24));
@@ -310,7 +317,7 @@ function Results({ L, S, groupBy, setGroupBy, curve, setCurve }) {
           <td class="num r">${pfTxt(r.pf)}</td><td class=${cls('num r', sgn(r.usd))}>${fmt.money(r.usd, 0)}</td></tr>`)}</tbody></table></div></section>
   </div>
 
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,360px),1fr));gap:12px">
     <section class="panel"><div class="ph"><h2>R distribution</h2><span class="sub">${rx.length} ideas with R</span></div>
       <div class="pb"><div style="display:flex;gap:8px;align-items:flex-end;height:150px" role="img" aria-label=${'R distribution: ' + B.map((b, k) => b[0] + ' ' + cnt[k]).join(', ')}>
         ${B.map((b, k) => html`<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:5px;height:100%"><span class="num sub">${cnt[k]}</span>
@@ -323,6 +330,13 @@ function Results({ L, S, groupBy, setGroupBy, curve, setCurve }) {
       <div class="pb" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">${box('With bias', sw)}${box('Against bias', sa)}
         <div class="sub" style="grid-column:1/-1">${sw.n && sa.n && sw.avg != null && sa.avg != null ? `Against your bias you averaged ${(sa.avg - sw.avg >= 0 ? '+' : '') + (sa.avg - sw.avg).toFixed(2)}R per idea compared with trading with it.`
           : 'Set the sentiment in daily prep each morning to compare. Neutral and unset days are left out here.'}</div></div></section>
+    <section class="panel span2"><div class="ph"><h2>Trade path</h2><span class="sub">${tp.n ? tp.n + ' ideas recorded' : 'connector 1.02'}</span></div>
+      ${tp.n ? html`<div class="pb" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">
+        <div class="box stack" style="gap:4px"><span class="cap">Winners: heat</span><span class="num neg" style="font-size:18px;font-weight:700">${tp.heat != null ? fR(tp.heat) : '—'}</span><span class="sub">avg drawdown · ${tp.deep} of ${pw.length} past −0.5R</span></div>
+        <div class="box stack" style="gap:4px"><span class="cap">Losers: best point</span><span class="num pos" style="font-size:18px;font-weight:700">${tp.lossBest != null ? fR(tp.lossBest) : '—'}</span><span class="sub">avg · ${tp.lossHit1} of ${pl.length} were +1R first</span></div>
+        <div class="box stack" style="gap:4px"><span class="cap">Winners: kept</span><span class="num" style="font-size:18px;font-weight:700">${tp.kept != null ? Math.round(tp.kept * 100) + '%' : '—'}</span><span class="sub">of the best point, on average</span></div>
+        <div class="sub" style="grid-column:1/-1">${tp.heat != null && tp.heat > -0.35 ? 'Winners rarely go far against you, so a tighter stop may be worth testing.' : tp.lossHit1 ? 'Some losers were +1R first: check your management rules on those.' : 'Drawdown and best point are measured on the combined position, in R of the risk you held.'}</div></div>`
+        : html`<div class="pb sub">Install connector 1.02 in MT5 to record each trade's drawdown and best point. Trades from then on appear here.</div>`}</section>
     <section class="panel"><div class="ph"><h2>Costliest mistakes</h2><span class="sub">tagged in reviews</span></div>
       <div style="padding:0 6px 8px">${mrows.length ? html`<table class="mtbl"><thead><tr><th>Mistake</th><th class="r">Ideas</th><th class="r">Avg R</th><th class="r">Total R</th></tr></thead>
         <tbody>${mrows.slice(0, 8).map((m) => html`<tr><td style="white-space:normal">${m.label}</td><td class="num r">${m.n}</td><td class=${cls('num r', tone(m.avg))}>${fR(m.avg)}</td><td class=${cls('num r', tone(m.tot))} style="font-weight:600">${fR(m.tot)}</td></tr>`)}</tbody></table>`

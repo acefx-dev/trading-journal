@@ -1,4 +1,29 @@
-# Trade Journal — v1.5 (connector 1.01)
+# Trade Journal — v1.6 (connector 1.02)
+
+## Upgrading to v1.6: trade path (connector 1.02)
+
+The push deploys automatically and runs migration `0007` (tables `sl_events` and `path_episodes`, setting `risk_grace_sec`). It also switches market sentiment to one overall bias. You can add separate markets back under Strategies → Market sentiment.
+
+**Install connector 1.02 on every MT5 terminal** (FundingPips and both The5ers accounts):
+1. Copy the new `mt5/TradeJournalConnector.mq5` over the old one in **File → Open Data Folder → MQL5 → Experts**.
+2. Open it in MetaEditor and press **F7**. It should compile with 0 errors.
+3. On each chart running the connector, right-click → **Expert list**, or just remove and re-attach it. Check that the inputs (URL, token) are still set. The status line on the chart should say `Trade Journal connector 1.02`, and Accounts & sync shows the version.
+
+The EA is still read-only: it has no order functions. New in 1.02, checked once a second:
+- **Stop-loss and size changes** on each open position, with the money at risk from the entry to the stop at that moment (0 once the stop is at or past the entry).
+- **Drawdown and best point**: the lowest and highest combined floating P&L of all open positions of one symbol and side.
+
+**What the journal does with it:**
+- **Risk = the peak combined risk you held.** A higher combined risk that lasts less than **60 s** (Settings → Trade grouping) is ignored. That's the moment after a scale-in before you move the first stop: your $300 + $188.28 case counts as $300. If you leave it like that for longer, it counts as $488.28. R, the per-idea and daily limits and Analytics all use this. Trades without 1.02 data keep the old measure (the sum of each position's first stop).
+- **Trade path tab** on each idea: worst and best point in R and dollars and when they happened, how much of the best you kept, and a timeline of the combined risk as stops moved.
+- **Analytics → Trade path:** average heat on winners, how far losers went your way first, and how much of the best point winners kept.
+
+Limits:
+- Only trades from when 1.02 is running are covered.
+- If the EA is restarted mid-trade, that trade's path is marked "recorded from part-way through".
+- Partial closes drop out of the combined floating P&L, so the best point after a partial close is the remaining positions only.
+- The EA hasn't been compiled here: press F7 and tell me about any error.
+
 
 ## Upgrading to v1.5: daily prep, sentiment, risk limits, linked accounts
 

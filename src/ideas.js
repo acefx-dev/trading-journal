@@ -5,6 +5,7 @@ import { netOf, round } from './build.js';
 import { applyRiskChecks } from './risk.js';
 import { sentimentByDay, alignOf } from './sentiment.js';
 import { bneDay } from './time.js';
+import { loadPaths } from './path.js';
 
 const WEEK = 7 * 86400000;
 
@@ -60,11 +61,13 @@ export async function loadIdeas(db, { sample, scope, from = 0, to = 8.64e15, inc
   const linksByIdea = Object.fromEntries(links.map((s) => [s.idea_id, s.n]));
   const posByIdea = {};
   for (const p of positions) (posByIdea[p.idea_id] ||= []).push(p);
+  const settings0 = await getSettings(db);
+  const paths = await loadPaths(db, positions, settings0.riskGraceSec);
 
   const out = [];
   for (const idea of ideas) {
     const ps = posByIdea[idea.id] || [];
-    const agg = aggregate(idea, ps, scope);
+    const agg = aggregate(idea, ps, scope, paths);
     if (!agg) continue;
     if (agg.status === 'closed' && (agg.close_time < from || agg.close_time >= to)) continue;
     if (agg.status === 'open' && !includeOpen) continue;
@@ -93,7 +96,7 @@ export async function loadIdeas(db, { sample, scope, from = 0, to = 8.64e15, inc
   return out.sort((a, b) => b.open_time - a.open_time);
 }
 
-export function aggregate(idea, ps, scope) {
+export function aggregate(idea, ps, scope, paths = null) {
   if (!ps.length) return null;
   const lead = ps.filter((p) => p.account_id === idea.account_id);
   const base = lead.length ? lead : ps;
@@ -118,6 +121,17 @@ export function aggregate(idea, ps, scope) {
     swap: round(a.swap, 2), fee: round(a.fee, 2), costs: round(a.commission + a.swap + a.fee, 2), risk: a.riskKnown ? round(a.risk, 2) : null,
     r: a.riskKnown && a.risk > 0 ? round(a.net / a.risk, 2) : null, floating: round(a.floating, 2),
   })).sort((x, y) => (y.lead - x.lead) || x.account_id - y.account_id);
+  // connector 1.02: risk = the peak combined open risk (stop moves counted), plus drawdown and best point in R
+  for (const a of accounts) {
+    const pth = paths && paths.get(idea.id + '|' + a.account_id);
+    if (!pth) continue;
+    a.initialRisk = a.risk;
+    if (pth.peak > 0) { a.risk = pth.peak; a.r = round(a.net / pth.peak, 2); }
+    const basisR = a.risk > 0 ? a.risk : null;
+    a.path = { peak: pth.peak ?? null, initial: pth.initial ?? a.initialRisk, transient: pth.transient ?? null,
+      mae: pth.mae ?? null, mfe: pth.mfe ?? null, mae_t: pth.mae_t ?? null, mfe_t: pth.mfe_t ?? null, partial: !!pth.partial,
+      mae_r: basisR && pth.mae != null ? round(pth.mae / basisR, 2) : null, mfe_r: basisR && pth.mfe != null ? round(pth.mfe / basisR, 2) : null };
+  }
 
   const inScope = scope && scope.ids ? accounts.filter((a) => scope.ids.has(a.account_id)) : accounts;
   if (!inScope.length) return null;
@@ -129,6 +143,7 @@ export function aggregate(idea, ps, scope) {
     lead_positions: lead.length, copies: ps.length - lead.length,
     net, basisNet: basis.net,
     gross: sum('gross'), commission: sum('commission'), swap: sum('swap'), fee: sum('fee'), costs: sum('costs'), basis_account_id: basis.account_id, risk: basis.risk, r: basis.r,
+    initialRisk: basis.initialRisk ?? basis.risk, path: basis.path || null,
     floating: round(inScope.reduce((s, a) => s + a.floating, 0), 2),
   };
 }

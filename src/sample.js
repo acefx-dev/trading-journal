@@ -54,6 +54,8 @@ export async function clearSample(db) {
     stmt(db, 'DELETE FROM prep_items WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM prep_sentiment WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM strategies WHERE is_sample = 1'),
+    stmt(db, 'DELETE FROM sl_events WHERE account_id IN (SELECT id FROM accounts WHERE is_sample = 1)'),
+    stmt(db, 'DELETE FROM path_episodes WHERE account_id IN (SELECT id FROM accounts WHERE is_sample = 1)'),
     stmt(db, 'UPDATE accounts SET master_account_id = NULL WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM accounts WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM prop_firms WHERE is_sample = 1'),
@@ -115,6 +117,7 @@ export async function seedSample(db, now = Date.now()) {
   const reviews = [];
   let o = 0;
   const masterRisk = 250; // 0.5% of 50K
+  const paths = []; // trade path as connector 1.02 would record it
 
   for (const d of days) {
     const plan = [];
@@ -143,15 +146,20 @@ export async function seedSample(db, now = Date.now()) {
         const tOpen = openUtc + k * (8 + Math.floor(rand() * 9)) * 60000;
         mPositions.push({ id: master.pos++, entry, sl, lots, tOpen, risk: Math.round(Math.abs(entry - sl) * spec.vpp * lots * 100) / 100 });
       }
+      const tradePaths = [];
+      tradePaths.push({ who: 'm', ps: mPositions.map((p) => ({ id: p.id, t: p.tOpen, risk: p.risk })), end: exitUtc, net: 0, sym, dir });
       for (const p of mPositions) {
         const pf = Math.round((exitPx - p.entry) * dir * p.lots * spec.vpp * 100) / 100;
         master.deals.push(deal(master.ticket++, p.id, p.tOpen, dir > 0 ? 0 : 1, 0, sym, p.lots, p.entry, 0, -round2(p.lots * 0.35), p.sl, p.risk, 'RGR panel', spec.digits));
         master.deals.push(deal(master.ticket++, p.id, exitUtc, dir > 0 ? 1 : 0, 1, sym, p.lots, exitPx, pf, -round2(p.lots * 0.35), 0, null, '', spec.digits));
+        tradePaths[0].net += pf;
         if (sym === 'USDJPY') master.deals[master.deals.length - 1].swap = -round2(p.lots * 1.8); // forex: overnight swap
       }
       // copies on the two challenge accounts (2x size); #2 sometimes misses a copy (news filter)
       for (const c of copies) {
         if (c.slip && rand() < 0.03) continue;
+        const cp = { who: copies.indexOf(c), ps: [], end: exitUtc + 900, net: 0, sym, dir };
+        tradePaths.push(cp);
         for (const p of mPositions) {
           const lots = round2(p.lots * 2);
           const slipPx = c.slip * spec.dist * 0.02 * dir;
@@ -161,10 +169,13 @@ export async function seedSample(db, now = Date.now()) {
           const name = COPY_NAME[sym];
           c.deals.push(deal(c.ticket++, cid, p.tOpen + 700 + Math.floor(rand() * 900), dir > 0 ? 0 : 1, 0, name, lots, entry, 0, -round2(lots * 0.35), p.sl, round2(p.risk * 2 + Math.abs(slipPx) * lots * spec.vpp), 'TC:' + p.id, spec.digits));
           c.deals.push(deal(c.ticket++, cid, exitUtc + 400 + Math.floor(rand() * 900), dir > 0 ? 1 : 0, 1, name, lots, exitPx - slipPx * 0.5, pf, -round2(lots * 0.35), 0, null, '', spec.digits));
+          cp.ps.push({ id: cid, t: c.deals[c.deals.length - 2].time - SERVER_OFFSET * 1000, risk: c.deals[c.deals.length - 2].risk });
+          cp.net += pf;
           if (sym === 'USDJPY') c.deals[c.deals.length - 1].swap = -round2(lots * 1.8);
         }
       }
       reviews.push({ firstPos: mPositions[0].id, sym, R, nPos, day: d, strategy: spec.strategy });
+      paths.push(...tradePaths);
     }
   }
   // one trade placed by hand on a copy account (not a copy): becomes its own idea
@@ -177,7 +188,7 @@ export async function seedSample(db, now = Date.now()) {
   const BIAS = ['bull', 'bull', 'bear', 'neutral', null];
   await db.batch(days.map((d) => { const b = BIAS[Math.floor(rand() * BIAS.length)];
     return stmt(db, 'INSERT OR REPLACE INTO prep_sentiment (day, is_sample, overall, markets, basis, note, updated_at) VALUES (?,1,?,?,?,?,?)',
-      d, b, JSON.stringify(b ? { JP225: b, NAS100: rand() < 0.7 ? b : 'neutral' } : {}), JSON.stringify(['US futures', 'VIX']), null, bneDayStart(d) + 8 * 3600000); }));
+      d, b, JSON.stringify({}), JSON.stringify(['US futures', 'VIX']), null, bneDayStart(d) + 8 * 3600000); }));
 
   const net = (ds) => ds.reduce((a, x) => a + x.profit + x.commission + x.swap + x.fee, 0);
   const upload = async (acct, deals, size) => {
@@ -190,6 +201,34 @@ export async function seedSample(db, now = Date.now()) {
   };
   await upload(m, master.deals, 50000);
   for (const c of copies) await upload(c.acct, c.deals, 100000);
+
+  // ---- trade path: on scale-ins the first stop is moved ~20 s after each add, so the combined risk
+  // stays at the first position's risk (the short spike is ignored); drawdown and best point per trade ----
+  const evRows = [], epRows = [];
+  for (const tp of paths) {
+    const acctId = tp.who === 'm' ? m.id : copies[tp.who].acct.id;
+    // the first position starts with the whole risk; each add is paid for by moving the first stop in ~20 s later
+    const full = round2(tp.ps.reduce((a, p) => a + p.risk, 0));
+    let r0 = full;
+    tp.ps.forEach((p, k) => {
+      evRows.push([acctId, p.id, p.t + 1000, k === 0 ? full : p.risk]);
+      if (k > 0) { r0 = Math.max(0, round2(r0 - p.risk)); evRows.push([acctId, tp.ps[0].id, p.t + 20000, r0]); }
+    });
+    const peak = full, net = tp.net, t0 = tp.ps[0].t, dur = tp.end - t0;
+    const win = net > 0;
+    const mae = win ? -round2(peak * (0.08 + rand() * 0.6)) : round2(Math.min(net, -peak * 0.2));
+    const mfe = win ? round2(net * (1 + rand() * 0.45)) : round2(peak * rand() * 0.9);
+    const maeT = t0 + Math.floor(dur * (win ? 0.1 + rand() * 0.3 : 0.92));
+    const mfeT = t0 + Math.floor(dur * (win ? 0.6 + rand() * 0.35 : 0.1 + rand() * 0.4));
+    epRows.push([acctId, tp.sym, tp.dir > 0 ? 'long' : 'short', t0 + 500, tp.end, JSON.stringify(tp.ps.map((p) => p.id)), mae, maeT, mfe, mfeT]);
+  }
+  for (let k = 0; k < evRows.length; k += 80) {
+    await db.batch(evRows.slice(k, k + 80).map((e) => stmt(db, 'INSERT OR IGNORE INTO sl_events (account_id, position_id, t, sl, volume, risk) VALUES (?,?,?,NULL,NULL,?)', ...e)));
+  }
+  for (let k = 0; k < epRows.length; k += 80) {
+    await db.batch(epRows.slice(k, k + 80).map((e) => stmt(db, `INSERT OR REPLACE INTO path_episodes (account_id, symbol, direction, start_t, end_t, position_ids, mae, mae_t, mfe, mfe_t, partial, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,0,?)`, ...e, now)));
+  }
 
   // ---- reviews: strategy, checklist, rating, mistakes, notes ----
   const ideaRows = await all(db, `SELECT p.position_id, p.idea_id FROM positions p WHERE p.account_id = ?`, m.id);

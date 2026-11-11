@@ -91,7 +91,7 @@ function Row({ i, on }) {
 // ------------------------------------------------------------------ one idea (right-hand panel)
 
 let pendingPaste = null; // an image pasted on another tab, uploaded once the Screenshots tab opens
-const TABS = [['review', 'Review'], ['chart', 'Screenshots & charts'], ['pos', 'Positions & accounts'], ['log', 'Activity']];
+const TABS = [['review', 'Review'], ['path', 'Trade path'], ['chart', 'Screenshots & charts'], ['pos', 'Positions & accounts'], ['log', 'Activity']];
 
 function IdeaPanel({ id, prev, next, reloadList }) {
   const st = useData(() => api('/ideas/' + id), [id]);
@@ -113,6 +113,7 @@ function IdeaPanel({ id, prev, next, reloadList }) {
   const reload = () => { st.reload(); reloadList(); };
   const lead = d.positions.filter((p) => p.account_id === i.account_id);
   const leadAcc = i.accounts.find((a) => a.lead) || i.accounts[0];
+  const pth = leadAcc.path;
   const done = d.checklist.filter((c) => c.checked).length;
   const risk = d.risk, sent = d.sentiment;
   const twins = [...new Set(d.positions.filter((p) => p.copy_link === 'twin').map((p) => p.account_id))];
@@ -139,10 +140,12 @@ function IdeaPanel({ id, prev, next, reloadList }) {
         · ${lead.length} position${lead.length > 1 ? 's' : ''} on ${i.lead_name}${i.accounts.length > 1 ? ` · copied to ${i.accounts.length - 1} account${i.accounts.length > 2 ? 's' : ''}` : ''}</div>
     </div>
     <div class="mstrip">
-      <div class="kcell"><div class="cap">${i.accounts.length > 1 ? 'Combined P&L' : 'Net P&L'}</div><div class=${cls('num', sgn(i.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.net)}</div><div class="sub">${i.status === 'open' ? 'floating' : 'after costs'}</div></div>
+      <div class="kcell"><div class="cap">${i.accounts.length > 1 ? 'Combined P&L' : 'Net P&L'}</div><div class=${cls('num', sgn(i.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.net)}</div><div class="sub" title="Commission, swap and fees">${i.status === 'open' ? 'floating' : `after ${fmt.money(i.costs)} costs`}</div></div>
       <div class="kcell"><div class="cap">Result</div><div class=${cls('num', sgn(leadAcc.r))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(leadAcc.r)}</div><div class="sub">${i.lead_name}</div></div>
-      <div class="kcell"><div class="cap">Initial risk</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div><div class="sub">${leadAcc.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : 'lead account'}</div></div>
-      <div class="kcell"><div class="cap">Costs</div><div class=${cls('num', sgn(i.costs))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.costs)}</div><div class="sub">comm. · swap · fees</div></div>
+      <div class="kcell"><div class="cap" title=${pth && pth.peak ? 'Highest combined risk you held (stop moves counted)' : 'Sum of each position\'s first stop'}>${pth && pth.peak ? 'Risk (peak held)' : 'Initial risk'}</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div><div class="sub">${leadAcc.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : 'lead account'}</div></div>
+      ${pth && pth.mae_r != null && html`<div class="kcell"><div class="cap" title="Worst point of the combined floating P&L while the trade was open">Drawdown</div>
+        <div class="num neg" style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(Math.min(0, pth.mae_r))}</div>
+        <div class="sub" title="Best point during the trade">best <span class=${sgn(pth.mfe_r)}>${fmt.r(pth.mfe_r)}</span></div></div>`}
       <div class="kcell"><div class="cap">Checklist</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${d.checklist.length ? done + ' / ' + d.checklist.length : '—'}</div><div class="sub">${!i.strategy_id ? 'no strategy' : d.checklist.length - done ? (d.checklist.length - done) + ' not ticked' : 'all ticked'}</div></div>
     </div>
     <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => pickTab(k)}>${l}${k === 'chart' && d.screenshots.length + d.links.length > 0 ? html` <span class="chip num" style="height:18px;padding:0 6px;font-size:11px">${d.screenshots.length + d.links.length}</span>` : ''}</button>`)}</div>
@@ -151,6 +154,7 @@ function IdeaPanel({ id, prev, next, reloadList }) {
       ${tab === 'review' && html`<${Review} d=${d} reload=${reload}/>`}
       ${tab === 'pos' && html`<div class="stack" style="gap:18px">${risk && risk.checks.length > 0 && html`<${RiskChecks} risk=${risk}/>`}<${Positions} d=${d} reload=${reload}/><${Executions} i=${i}/><${Grouping} d=${d} reload=${reload}/></div>`}
       ${tab === 'chart' && html`<${Chart} d=${d} reload=${reload}/>`}
+      ${tab === 'path' && html`<${TradePath} d=${d}/>`}
       ${tab === 'log' && html`<${Audit} items=${d.audit}/>`}
     </div>`;
 }
@@ -171,8 +175,75 @@ function RiskChecks({ risk }) {
       <td class="num r">${c.dayUsed != null ? fmt.plain(c.dayUsed) : '—'}</td>
       <td class="num r">${c.dayLimit != null ? fmt.plain(c.dayLimit) + pct(c.dayLimitPct) : html`<span class="mut">not set</span>`}</td>
       <td>${c.dayLevel && LVL[c.dayLevel] ? html`<span class=${'chip ' + LVL[c.dayLevel][0]}>${LVL[c.dayLevel][1]}</span>` : ''}</td></tr>`)}</tbody></table></div>
-    <div class="sub" style="padding:8px 14px 12px">Risk is the sum of each position's initial stop. If you moved stops to keep a scale-in within your limit, this can overstate it until the connector update that tracks stop changes.</div>
+    <div class="sub" style="padding:8px 14px 12px">With connector 1.02, risk is the highest combined risk you held for at least ${risk.graceSec || 60} s, so moving your first stop right after a scale-in isn't counted twice. Without it (older trades), it's the sum of each position's first stop.</div>
   </section>`;
+}
+
+/** Put marker labels above or below the line so they don't overlap; drop any that still would. */
+function placeLabels(ms) {
+  const GAP = 18, last = { true: -99, false: -99 };
+  return [...ms].sort((a, b) => a.p - b.p).map((m) => {
+    let top = m.top;
+    if (m.p - last[top] < GAP) top = !top;
+    const show = m.p - last[top] >= GAP;
+    if (show) last[top] = m.p;
+    return { ...m, top, show };
+  });
+}
+
+const fmtGap = (ms) => (ms < 60000 ? Math.round(ms / 1000) + ' s' : fmt.dur(ms));
+
+/** How the trade moved (in R of the risk held) and how the combined risk changed as stops moved. */
+function TradePath({ d }) {
+  const i = d.idea, list = d.tradePath || [];
+  const lead = list.find((x) => x.lead) || list[0];
+  if (!lead) return html`<div class="box stack" style="gap:6px"><b>Not recorded for this trade</b>
+    <div class="sub">The drawdown, best point and stop moves come from connector 1.02 on ${i.lead_name}. Install it in MT5 (Accounts & sync → MT5 connector) and new trades will show their path here. Older trades keep using the first stop of each position.</div></div>`;
+  const leadAcc = i.accounts.find((a) => a.lead) || i.accounts[0];
+  const R = leadAcc.risk;
+  const res = leadAcc.r;
+  const lo = Math.min(-1, lead.mae_r ?? 0, res ?? 0), hi = Math.max(1, lead.mfe_r ?? 0, res ?? 0);
+  const x = (v) => ((v - lo) / (hi - lo) * 100).toFixed(2) + '%';
+  const after = (t) => (t && i.open_time ? fmtGap(t - i.open_time) + ' after entry' : '');
+  const marks = [[-1, 'var(--neg)', 'S/L −1R', 'top'], [0, 'var(--mut)', 'entry', 'top'],
+    ...(lead.mae_r != null ? [[lead.mae_r, '#FF9AA2', 'worst ' + fmt.r(lead.mae_r), '']] : []),
+    ...(res != null ? [[res, '#9DB8FF', 'exit ' + fmt.r(res), 'top']] : []),
+    ...(lead.mfe_r != null ? [[lead.mfe_r, '#5BE3A0', 'best ' + fmt.r(lead.mfe_r), '']] : [])];
+  return html`<div class="stack" style="gap:16px">
+    <section class="card stack" style="gap:8px">
+      <div class="spread"><h2 class="h2">How the trade moved</h2><span class="sub">${lead.name} · R of ${R != null ? fmt.plain(R) : '—'} risk${lead.partial ? ' · recorded from part-way through' : ''}</span></div>
+      ${lead.mae_r != null || lead.mfe_r != null ? html`<div class="tpbar" role="img" aria-label=${`Worst ${fmt.r(lead.mae_r)}, best ${fmt.r(lead.mfe_r)}, exit ${fmt.r(res)}`}>
+          <div class="ax"></div>
+          ${lead.mae_r != null && html`<div class="fill" style=${`left:${x(Math.min(0, lead.mae_r))};width:calc(${x(0)} - ${x(Math.min(0, lead.mae_r))});background:rgba(255,122,132,.55)`}></div>`}
+          ${lead.mfe_r != null && lead.mfe_r > 0 && html`<div class="fill" style=${`left:${x(0)};width:calc(${x(lead.mfe_r)} - ${x(0)});background:rgba(61,214,140,.5)`}></div>`}
+          ${placeLabels(marks.map(([v, c, l, pos]) => ({ p: (v - lo) / (hi - lo) * 100, c, l, top: pos === 'top' }))).map((m) => html`<span class="mk" style=${`left:${m.p.toFixed(2)}%;background:${m.c}`}></span>${m.show && html`<span class=${'lb' + (m.top ? ' top' : '')} style=${`left:${m.p.toFixed(2)}%;color:${m.c};transform:translateX(${m.p < 8 ? '0' : m.p > 92 ? '-100%' : '-50%'})`}>${m.l}</span>`}`)}
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:14px">
+          <div class="box"><div class="cap">Worst point</div><div class="num neg" style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(Math.min(0, lead.mae_r))} <span class="sub">${fmt.money(Math.min(0, lead.mae))}</span></div><div class="sub">${lead.mae > 0 ? 'never below entry' : after(lead.mae_t)}</div></div>
+          <div class="box"><div class="cap">Best point</div><div class=${cls('num', sgn(lead.mfe_r))} style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(lead.mfe_r)} <span class="sub">${fmt.money(lead.mfe)}</span></div><div class="sub">${after(lead.mfe_t)}</div></div>
+          <div class="box"><div class="cap">Kept of the best</div><div class="num" style="font-size:16px;font-weight:600;margin-top:3px">${res > 0 && lead.mfe_r > 0 ? Math.round(Math.min(1, res / lead.mfe_r) * 100) + '%' : '—'}</div><div class="sub">${res > 0 && lead.mfe_r > 0 ? `gave back ${Math.max(0, lead.mfe_r - res).toFixed(2)}R` : lead.mfe_r > 0 ? `ended at a loss after +${lead.mfe_r.toFixed(2)}R` : 'never in profit'}</div></div>
+          <div class="box"><div class="cap">Went against you first?</div><div style="font-size:15px;font-weight:600;margin-top:3px">${lead.mae_t && lead.mfe_t ? (lead.mae_t < lead.mfe_t ? 'Yes' : 'No') : '—'}</div><div class="sub">${lead.mae_r != null ? (lead.mae_r > -0.25 ? 'little heat (under 0.25R)' : lead.mae_r <= -0.9 ? 'close to the stop' : 'normal heat') : ''}</div></div>
+        </div>` : html`<div class="sub">The drawdown and best point weren't recorded (the connector wasn't running during the trade).</div>`}
+      <div class="sub">Combined floating P&L of all positions on ${lead.name}, checked every second while the trade was open.</div>
+    </section>
+    ${list.filter((a) => a.steps && a.steps.length).map((a) => html`<section class="card flush">
+      <div class="card-head"><div><h2 class="h2">Risk while the idea was open · ${a.name}</h2>
+        <div class="sub" style="margin-top:4px">Risk used: <b class="num" style="color:var(--text)">${a.peak != null ? fmt.plain(a.peak) : '—'}</b> (highest held for ${d.graceSec} s or more)${a.initial != null ? ` · first stops added up: ${fmt.plain(a.initial)}` : ''}${a.transient != null && a.transient > (a.peak || 0) + 0.01 ? ` · brief high ${fmt.plain(a.transient)} not counted` : ''}</div></div></div>
+      <div class="scroll"><table class="tbl"><thead><tr><th>Time</th><th>Position</th><th>What changed</th><th class="r">S/L</th><th class="r">Lots</th><th class="r">Open risk, all positions</th></tr></thead>
+      <tbody>${(() => { const prev = new Map(); return a.steps.map((st) => {
+        let what = st.kind === 'open' ? 'Opened' : st.kind === 'close' ? 'Closed' : '';
+        if (st.kind === 'sl') {
+          const pr = prev.get(st.position_id);
+          what = st.risk == null ? 'No S/L' : st.risk === 0 ? 'S/L at or past entry' : pr === undefined ? 'S/L recorded'
+            : pr == null ? 'S/L added' : st.risk < pr - 0.005 ? 'S/L moved in (less risk)' : st.risk > pr + 0.005 ? 'S/L moved out or size added' : 'Size changed';
+          prev.set(st.position_id, st.risk);
+        }
+        return html`<tr><td class="num">${fmt.timeS(st.t)}</td><td class="num">#${st.position_id}</td>
+          <td>${what}${st.kind === 'sl' && st.risk > 0 ? html` <span class="sub num">${fmt.plain(st.risk)}</span>` : ''}</td>
+          <td class="num r">${st.sl ? fmt.num(st.sl, 5) : '—'}</td><td class="num r">${st.volume ? fmt.num(st.volume) : '—'}</td>
+          <td class="num r" style=${st.total != null && a.peak != null && st.total > a.peak + 0.01 ? 'color:var(--amber)' : ''}>${st.total != null ? fmt.plain(st.total) : 'unknown'}</td></tr>`; }); })()}</tbody></table></div>
+    </section>`)}
+  </div>`;
 }
 
 function Positions({ d, reload }) {

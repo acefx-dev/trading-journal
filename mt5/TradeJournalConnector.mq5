@@ -5,9 +5,10 @@
 //|  order functions and cannot open, change or close any trade.      |
 //+------------------------------------------------------------------+
 #property copyright   "Personal use"
-#property version     "1.01"
+#property version     "1.02"
 #property description "Trade Journal connector (read-only). Sends deals, open positions and balance to your journal."
 #property description "It has no trading code: it never opens, modifies or closes trades or orders."
+#property description "1.02: also records stop-loss changes and the drawdown/best point of each trade."
 
 //--- inputs
 input group  "Journal"
@@ -21,10 +22,12 @@ input int    InpOpenIntervalSec  = 15;      // Send every N seconds while positi
 input int    InpIdleIntervalSec  = 60;      // Send every N seconds when flat (heartbeat)
 input int    InpBackfillDays     = 90;      // First run: send this many days of history
 input int    InpReconcileDays    = 35;      // Daily check: compare this many days with the journal
+input group  "Trade path (1.02)"
+input bool   InpTrackPath        = true;    // Record stop-loss moves, drawdown and best point (checked every second)
 input group  "Display"
 input bool   InpShowStatus       = true;    // Show the status lines on the chart
 
-#define CONNECTOR_VERSION "1.01"
+#define CONNECTOR_VERSION "1.02"
 #define MAX_DEALS_PER_SEND 200
 #define MAX_POSITIONS      500
 #define OVERLAP_MS         120000          // re-send the last 2 minutes of deals (duplicates are ignored)
@@ -44,6 +47,37 @@ int      g_lastSent    = 0;
 long     g_missing[];           // deal tickets the journal asked for
 
 string GvAck() { return "TJC_" + IntegerToString(g_login) + "_ack"; }
+
+//--- trade path (1.02): per open position, the last S/L and volume seen
+struct PosTrack
+  {
+   long   id;
+   double sl;
+   double vol;
+   bool   seen;
+  };
+//--- per symbol and side: combined floating P&L of the open positions (one "episode" while any is open)
+struct PathGroup
+  {
+   string sym;
+   long   type;
+   long   start;      // server time ms of the first position's open
+   string ids;        // ",id1,id2,"
+   double cur;
+   bool   live;
+   bool   hasVal;
+   double mae;
+   long   maeT;
+   double mfe;
+   long   mfeT;
+   bool   partial;
+  };
+PosTrack  g_pt[];
+PathGroup g_gr[];
+string    g_ev[];        // queued S/L events (JSON), sent with the next upload
+string    g_epDone[];    // finished episodes (JSON)
+#define MAX_PATH_QUEUE 3000
+#define MAX_EVENTS_PER_SEND 500
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -92,6 +126,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans, const MqlTradeRequest 
 
 void OnTimer()
   {
+   PathTick();
    ulong now = GetTickCount64();
    if(now < g_nextTryMs) return;
    int interval = (PositionsTotal() > 0 ? InpOpenIntervalSec : InpIdleIntervalSec);
@@ -171,6 +206,19 @@ void SyncOnce(bool reconcile)
         }
      }
 
+   //--- trade path: queued S/L events, finished episodes and the ones still open
+   int nEv = (int)MathMin(ArraySize(g_ev), MAX_EVENTS_PER_SEND), nEp = (int)MathMin(ArraySize(g_epDone), 200);
+   string path = "";
+   if(InpTrackPath)
+     {
+      string evs = "", eps = "";
+      for(int k = 0; k < nEv; k++) evs += (k > 0 ? "," : "") + g_ev[k];
+      for(int k = 0; k < nEp; k++) eps += (k > 0 ? "," : "") + g_epDone[k];
+      for(int k = 0; k < ArraySize(g_gr); k++)
+         if(g_gr[k].hasVal) eps += (StringLen(eps) > 0 ? "," : "") + EpisodeJson(k, 0);
+      path = ",\"path\":{\"events\":[" + evs + "],\"episodes\":[" + eps + "]}";
+     }
+
    string body = "{\"v\":1,\"connector\":\"" + CONNECTOR_VERSION + "\"" +
                  ",\"login\":\"" + IntegerToString(g_login) + "\"" +
                  ",\"server\":" + JsonStr(AccountInfoString(ACCOUNT_SERVER)) +
@@ -182,7 +230,7 @@ void SyncOnce(bool reconcile)
                  ",\"offset_sec\":" + IntegerToString(offsetSec) +
                  ",\"deals\":[" + deals + "]" +
                  ",\"positions\":[" + pos + "],\"positions_complete\":" + (np < MAX_POSITIONS ? "true" : "false") +
-                 recon + "}";
+                 recon + path + "}";
 
    string resp = "";
    int code = Post(body, resp);
@@ -196,11 +244,13 @@ void SyncOnce(bool reconcile)
       JsonLongArray(resp, "missing", req);
       for(int k = 0; k < ArraySize(req); k++) AddMissing(req[k]);
       if(reconcile) g_lastRecon = TimeLocal();
+      if(nEv > 0) ArrayRemove(g_ev, 0, nEv);
+      if(nEp > 0) ArrayRemove(g_epDone, 0, nEp);
       g_fails = 0;
       g_lastError = "";
       g_lastOkLocal = TimeLocal();
       g_lastSent = nDeals;
-      g_dirty = more || ArraySize(g_missing) > 0;
+      g_dirty = more || ArraySize(g_missing) > 0 || ArraySize(g_ev) > 0;
       Status("OK | " + IntegerToString(nDeals) + " deal(s), " + IntegerToString(np) + " open position(s) sent" +
              (reconcile ? " | daily check done" : "") + (ArraySize(g_missing) > 0 ? " | catching up " + IntegerToString(ArraySize(g_missing)) + " missing deal(s)" : ""));
      }
@@ -213,6 +263,136 @@ void SyncOnce(bool reconcile)
       Status("NOT SENT: " + g_lastError + " | retry in " + IntegerToString((int)(wait / 1000)) + " s");
       if(g_fails == 3) Print("Trade Journal connector: ", g_lastError);
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Trade path (read-only): S/L changes and combined floating P&L     |
+//+------------------------------------------------------------------+
+void PathTick()
+  {
+   if(!InpTrackPath) return;
+   long nowMs = (long)TimeTradeServer() * 1000;
+   for(int i = 0; i < ArraySize(g_pt); i++) g_pt[i].seen = false;
+   for(int g = 0; g < ArraySize(g_gr); g++) { g_gr[g].cur = 0; g_gr[g].live = false; }
+
+   for(int i = 0; i < PositionsTotal(); i++)
+     {
+      ulong tk = PositionGetTicket(i);
+      if(tk == 0) continue;
+      long   id   = PositionGetInteger(POSITION_IDENTIFIER);
+      string sym  = PositionGetString(POSITION_SYMBOL);
+      long   type = PositionGetInteger(POSITION_TYPE);
+      double sl   = PositionGetDouble(POSITION_SL);
+      double vol  = PositionGetDouble(POSITION_VOLUME);
+      double open = PositionGetDouble(POSITION_PRICE_OPEN);
+      long   tOpen = PositionGetInteger(POSITION_TIME_MSC);
+      double pt   = SymbolInfoDouble(sym, SYMBOL_POINT);
+      if(pt <= 0) pt = 0.00001;
+
+      //--- S/L or volume changed (or a new position): queue an event with the money at risk now
+      int k = FindTrack(id);
+      if(k < 0)
+        {
+         k = ArraySize(g_pt);
+         ArrayResize(g_pt, k + 1, 32);
+         g_pt[k].id = id; g_pt[k].sl = -1; g_pt[k].vol = -1;
+        }
+      g_pt[k].seen = true;
+      if(MathAbs(sl - g_pt[k].sl) > pt / 2 || MathAbs(vol - g_pt[k].vol) > 1e-8)
+        {
+         g_pt[k].sl = sl; g_pt[k].vol = vol;
+         QueueEvent("{\"position\":" + IntegerToString(id) + ",\"t\":" + IntegerToString(nowMs) +
+                    ",\"sl\":" + DoubleToString(sl, Digits(sym)) + ",\"volume\":" + DoubleToString(vol, 8) +
+                    ",\"risk\":" + RiskAtStop(type, sym, vol, open, sl) + "}");
+        }
+
+      //--- add this position's floating P&L to its symbol/side group
+      int g = FindGroup(sym, type);
+      if(g < 0)
+        {
+         g = ArraySize(g_gr);
+         ArrayResize(g_gr, g + 1, 8);
+         g_gr[g].sym = sym; g_gr[g].type = type; g_gr[g].start = tOpen; g_gr[g].ids = ",";
+         g_gr[g].hasVal = false; g_gr[g].cur = 0; g_gr[g].live = false;
+         g_gr[g].partial = (nowMs - tOpen > 15000);   // the connector wasn't running when it opened
+        }
+      if(tOpen < g_gr[g].start) g_gr[g].start = tOpen;
+      if(StringFind(g_gr[g].ids, "," + IntegerToString(id) + ",") < 0) g_gr[g].ids += IntegerToString(id) + ",";
+      g_gr[g].cur += PositionGetDouble(POSITION_PROFIT);
+      g_gr[g].live = true;
+     }
+
+   //--- forget closed positions (their close comes from the deal history)
+   int keep = 0;
+   for(int i = 0; i < ArraySize(g_pt); i++) if(g_pt[i].seen) { if(keep != i) g_pt[keep] = g_pt[i]; keep++; }
+   ArrayResize(g_pt, keep, 32);
+
+   //--- update each group's lowest and highest value; finish groups with nothing open
+   for(int g = ArraySize(g_gr) - 1; g >= 0; g--)
+     {
+      if(g_gr[g].live)
+        {
+         double v = g_gr[g].cur;
+         if(!g_gr[g].hasVal || v < g_gr[g].mae) { g_gr[g].mae = v; g_gr[g].maeT = nowMs; }
+         if(!g_gr[g].hasVal || v > g_gr[g].mfe) { g_gr[g].mfe = v; g_gr[g].mfeT = nowMs; }
+         g_gr[g].hasVal = true;
+        }
+      else
+        {
+         if(g_gr[g].hasVal && ArraySize(g_epDone) < MAX_PATH_QUEUE)
+           {
+            int n = ArraySize(g_epDone);
+            ArrayResize(g_epDone, n + 1, 16);
+            g_epDone[n] = EpisodeJson(g, nowMs);
+           }
+         int last = ArraySize(g_gr) - 1;
+         for(int j = g; j < last; j++) g_gr[j] = g_gr[j + 1];
+         ArrayResize(g_gr, last, 8);
+         g_dirty = true;
+        }
+     }
+  }
+
+int FindTrack(long id)
+  {
+   for(int i = 0; i < ArraySize(g_pt); i++) if(g_pt[i].id == id) return i;
+   return -1;
+  }
+
+int FindGroup(string sym, long type)
+  {
+   for(int i = 0; i < ArraySize(g_gr); i++) if(g_gr[i].sym == sym && g_gr[i].type == type) return i;
+   return -1;
+  }
+
+void QueueEvent(string json)
+  {
+   int n = ArraySize(g_ev);
+   if(n >= MAX_PATH_QUEUE) { ArrayRemove(g_ev, 0, 1); n--; }
+   ArrayResize(g_ev, n + 1, 64);
+   g_ev[n] = json;
+  }
+
+// money lost if the position hit its S/L, from its entry ("0" if the S/L is at or past the entry, "null" if none)
+string RiskAtStop(long type, string sym, double vol, double open, double sl)
+  {
+   if(sl <= 0 || vol <= 0) return "null";
+   double p = 0;
+   ENUM_ORDER_TYPE ot = (type == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   if(!OrderCalcProfit(ot, sym, vol, open, sl, p)) return "null";
+   return (p < 0) ? DoubleToString(-p, 2) : "0";
+  }
+
+string EpisodeJson(int g, long endMs)
+  {
+   string ids = g_gr[g].ids;
+   if(StringLen(ids) > 2) ids = StringSubstr(ids, 1, StringLen(ids) - 2); else ids = "";
+   return "{\"symbol\":" + JsonStr(g_gr[g].sym) + ",\"type\":" + IntegerToString(g_gr[g].type) +
+          ",\"start\":" + IntegerToString(g_gr[g].start) + ",\"end\":" + IntegerToString(endMs) +
+          ",\"ids\":[" + ids + "]" +
+          ",\"mae\":" + DoubleToString(g_gr[g].mae, 2) + ",\"mae_t\":" + IntegerToString(g_gr[g].maeT) +
+          ",\"mfe\":" + DoubleToString(g_gr[g].mfe, 2) + ",\"mfe_t\":" + IntegerToString(g_gr[g].mfeT) +
+          ",\"partial\":" + (g_gr[g].partial ? "1" : "0") + "}";
   }
 
 //+------------------------------------------------------------------+

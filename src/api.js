@@ -6,6 +6,7 @@ import { handleIngest, groupAccount, processUpload } from './ingest.js';
 import { newShareToken } from './share.js';
 import { sentimentByDay } from './sentiment.js';
 import { resolveScope, loadIdeas, aggregate } from './ideas.js';
+import { loadPaths } from './path.js';
 import { summary, drawdown, groupSummary, rBuckets, behaviour, sessionOf } from './stats.js';
 import { bneDay, bneDayStart, bneToday, addDays, bneMonthRange } from './time.js';
 import { netOf, round } from './build.js';
@@ -124,6 +125,11 @@ on('PUT', '/settings', async ({ db, request }) => {
     const v = Number(b.risk_tolerance_pct);
     if (!(v >= 0 && v <= 50)) throw new HttpError(400, 'Tolerance is 0 to 50%');
     ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'risk_tolerance_pct', String(v)));
+  }
+  if (b.risk_grace_sec != null) {
+    const v = Number(b.risk_grace_sec);
+    if (!(v >= 0 && v <= 900)) throw new HttpError(400, 'Grace period is 0 to 900 seconds');
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'risk_grace_sec', String(v)));
   }
   if (b.link_accounts != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'link_accounts', b.link_accounts ? '1' : '0'));
   if (b.link_window_min != null) {
@@ -370,7 +376,14 @@ on('GET', '/ideas/:id', async ({ db, params, sample }) => {
     all(db, 'SELECT * FROM audit_log WHERE idea_id = ? ORDER BY time, id', ideaId),
   ]);
   const links = await all(db, 'SELECT * FROM idea_links WHERE idea_id = ? ORDER BY id', ideaId);
-  const agg = aggregate(idea, positions, null);
+  const paths = await loadPaths(db, positions, settings.riskGraceSec, true);
+  const agg = aggregate(idea, positions, null, paths);
+  // trade path per account: risk steps (stop moves) for the timeline
+  const tradePath = [...paths.entries()].map(([k, v]) => {
+    const acct = Number(k.split('|')[1]);
+    const a = agg && agg.accounts.find((x) => x.account_id === acct);
+    return { account_id: acct, name: a ? a.name : '', lead: acct === idea.account_id, ...(a && a.path ? a.path : {}), steps: v.steps || [] };
+  }).sort((x, y) => y.lead - x.lead);
   let riskInfo = { checks: [], violation: false, dayViolation: false }, sentimentInfo = { bias: null, align: 'unset', day: null };
   if (agg) {
     const dayStart = bneDayStart(bneDay(agg.open_time));
@@ -379,7 +392,7 @@ on('GET', '/ideas/:id', async ({ db, params, sample }) => {
     const dayIdeas = await loadIdeas(db, { sample, scope: await resolveScope(db, sample, { archived: '1' }), ideaIds: [...new Set([...sameDay, ideaId])] });
     const me = dayIdeas.find((x) => x.id === ideaId);
     if (me) {
-      riskInfo = { checks: me.risk_checks || [], violation: !!me.risk_violation, dayViolation: !!me.day_violation, tolerancePct: settings.riskTolerancePct };
+      riskInfo = { checks: me.risk_checks || [], violation: !!me.risk_violation, dayViolation: !!me.day_violation, tolerancePct: settings.riskTolerancePct, graceSec: settings.riskGraceSec };
       sentimentInfo = { bias: me.bias, align: me.align, day: bneDay(agg.open_time),
         sentiment: (await sentimentByDay(db, sample, bneDay(agg.open_time), bneDay(agg.open_time))).get(bneDay(agg.open_time)) || null };
     }
@@ -394,7 +407,7 @@ on('GET', '/ideas/:id', async ({ db, params, sample }) => {
   const checked = new Set(checks.filter((c) => c.checked).map((c) => c.item_id));
   return {
     idea: { ...idea, ...agg },
-    risk: riskInfo, sentiment: sentimentInfo,
+    risk: riskInfo, sentiment: sentimentInfo, tradePath, graceSec: settings.riskGraceSec,
     positions: positions.map((p) => ({ ...p, net: netOf(p), r: p.risk > 0 ? round(netOf(p) / p.risk, 2) : null })),
     checklist: items.map((it) => ({ id: it.id, label: it.label, checked: checked.has(it.id) })),
     mistakes: mist.map((m) => m.mistake_id),
@@ -742,6 +755,7 @@ on('GET', '/analytics/ideas', async ({ db, sample, q }) => {
       rating: i.rating, mistakes: i.mistakes, reviewed: i.reviewed, positions: i.lead_positions,
       ckTotal: i.checklistTotal, ckDone: i.checklistDone, missed: [...(i.checklistMissed || []), ...(i.risk_violation ? ['risk_trade'] : []), ...(i.day_violation ? ['risk_day'] : [])],
       autoViolation: !!(i.risk_violation || i.day_violation), align: i.align, bias: i.bias,
+      mae: i.path ? i.path.mae_r : null, mfe: i.path ? i.path.mfe_r : null, maeFirst: i.path && i.path.mae_t && i.path.mfe_t ? i.path.mae_t < i.path.mfe_t : null,
     })),
     mistakes, rules: [...items, { id: 'risk_trade', label: 'Risk per idea within limit (auto)' }, { id: 'risk_day', label: 'Daily risk within limit (auto)' }], saved: (() => { try { return JSON.parse(saved?.value || '[]'); } catch { return []; } })(),
   };
