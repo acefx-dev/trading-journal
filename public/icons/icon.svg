@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1222"/><stop offset="1" stop-color="#1D3F94"/>
+    </linearGradient>
+    <linearGradient id="cover" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#E7ECF7"/>
+    </linearGradient>
+    <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#10B981" stop-opacity=".28"/><stop offset="1" stop-color="#10B981" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="sh" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity=".35"/></filter>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g filter="url(#sh)">
+    <!-- page block behind the cover -->
+    <rect x="150" y="116" width="250" height="300" rx="20" fill="#AFC0E6"/>
+    <rect x="144" y="110" width="250" height="300" rx="20" fill="#D5DEF2"/>
+    <!-- cover -->
+    <rect x="132" y="100" width="250" height="300" rx="20" fill="url(#cover)"/>
+    <!-- spine -->
+    <path d="M152 100h22v300h-22a20 20 0 0 1-20-20V120a20 20 0 0 1 20-20z" fill="#C7D2EC"/>
+    <rect x="174" y="100" width="4" height="300" fill="#B3C0E0"/>
+  </g>
+  <!-- bookmark ribbon -->
+  <path d="M322 100h30v66l-15-12-15 12z" fill="#F59E0B"/>
+  <!-- chart on the cover -->
+  <g stroke="#D3DBEE" stroke-width="3"><line x1="198" y1="196" x2="362" y2="196"/><line x1="198" y1="246" x2="362" y2="246"/><line x1="198" y1="296" x2="362" y2="296"/></g>
+  <path d="M202 304 L236 276 L266 290 L300 232 L330 248 L360 196 L360 318 L202 318 Z" fill="url(#area)"/>
+  <polyline points="202,304 236,276 266,290 300,232 330,248 360,196" fill="none" stroke="#10B981" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="360" cy="196" r="12" fill="#10B981" stroke="#FFFFFF" stroke-width="5"/>
+  <!-- title lines -->
+  <rect x="198" y="340" width="118" height="12" rx="6" fill="#C7D2EC"/>
+  <rect x="198" y="362" width="74" height="12" rx="6" fill="#DCE3F3"/>
+</svg>

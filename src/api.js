@@ -149,6 +149,7 @@ on('PUT', '/settings', async ({ db, request }) => {
     loss_stop: (v) => (Number(v) >= 0 && Number(v) <= 10 ? String(Math.round(Number(v))) : null),
     news_pause_min: (v) => (Number(v) >= 0 && Number(v) <= 120 ? String(Math.round(Number(v))) : null),
     plan_markets: (v) => String(v).slice(0, 200),
+    plan_schedule: (v) => (v === '' || parseSchedule(v).length === v.split(',').filter((x) => x.trim()).length ? String(v).slice(0, 300) : null),
     plan_levels: (v) => String(v).slice(0, 400),
     quote_symbols: (v) => String(v).slice(0, 400),
     calendar_ccys: (v) => (/^[A-Za-z, ]*$/.test(v) ? String(v).toUpperCase().slice(0, 60) : null),
@@ -767,7 +768,7 @@ on('GET', '/analytics/ideas', async ({ db, sample, q }) => {
   const ideas = (await loadIdeas(db, { sample, scope, includeOpen: false })).sort((a, b) => a.close_time - b.close_time);
   const [mistakes, items, saved] = await Promise.all([
     all(db, 'SELECT id, label FROM mistakes ORDER BY label'),
-    all(db, "SELECT c.id, c.label, c.strategy_id FROM checklist_items c JOIN strategies s ON s.id = c.strategy_id WHERE c.kind = 'trade' AND s.is_sample = ?", sample),
+    all(db, "SELECT c.id, c.label, c.strategy_id FROM checklist_items c JOIN strategies s ON s.id = c.strategy_id WHERE c.kind = 'trade' AND c.active = 1 AND s.is_sample = ? ORDER BY c.sort, c.id", sample),
     first(db, "SELECT value FROM settings WHERE key = 'saved_filters'"),
   ]);
   return {
@@ -1095,12 +1096,19 @@ on('GET', '/events', async ({ db, q }) => {
 
 // ------------------------------------------------------------------ trading floor: game plan, debrief, sizing
 
+/** "JP225@10:00-14:00,NAS100@16:00-20:00" → [{symbol, from, to}] (Brisbane times). */
+export function parseSchedule(txt) {
+  return String(txt || '').split(',').map((x) => x.trim()).map((x) => /^([^@]{1,20})@(\d{2}:\d{2})-(\d{2}:\d{2})$/.exec(x)).filter(Boolean)
+    .map((m) => ({ symbol: m[1].trim(), from: m[2], to: m[3] }));
+}
+
 on('GET', '/plan', async ({ db, sample, q }) => {
   const day = /^\d{4}-\d{2}-\d{2}$/.test(q.day || '') ? q.day : bneDay(Date.now());
   const row = await first(db, 'SELECT * FROM day_plans WHERE day = ? AND is_sample = ?', day, sample);
   const set = await getSettings(db);
   const parse = (v, d) => { try { return v ? JSON.parse(v) : d; } catch { return d; } };
-  return { day, markets: parse(row && row.markets, null), debrief: parse(row && row.debrief, null), updated_at: row ? row.updated_at : null,
+  return { day, markets: parse(row && row.markets, null), debrief: parse(row && row.debrief, null), setup: parse(row && row.setup, null), updated_at: row ? row.updated_at : null,
+    schedule: parseSchedule(set.raw.plan_schedule),
     defaults: { markets: String(set.raw.plan_markets || 'JP225,NAS100').split(',').map((x) => x.trim()).filter(Boolean),
       levels: String(set.raw.plan_levels || '').split(',').map((x) => x.trim()).filter(Boolean) } };
 });
@@ -1109,7 +1117,12 @@ on('PUT', '/plan', async ({ db, sample, request }) => {
   const b = await request.json();
   const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : bneDay(Date.now());
   const clean = (x, n) => String(x == null ? '' : x).slice(0, n);
-  let markets, debrief;
+  let markets, debrief, setup;
+  if (b.setup !== undefined) {
+    const x = b.setup || {};
+    const ticks = Object.fromEntries(Object.entries(x.ticks || {}).filter(([k, v]) => /^\d+$/.test(k) && v === true).slice(0, 60));
+    setup = JSON.stringify({ strategy_id: Number(x.strategy_id) || null, ticks });
+  }
   if (b.markets !== undefined) {
     if (!Array.isArray(b.markets) || b.markets.length > 8) throw new HttpError(400, 'Up to 8 markets');
     markets = JSON.stringify(b.markets.map((m) => ({ symbol: clean(m.symbol, 20), bias: ['long', 'short', 'wait', ''].includes(m.bias) ? m.bias : '',
@@ -1119,9 +1132,10 @@ on('PUT', '/plan', async ({ db, sample, request }) => {
     const d = b.debrief || {};
     debrief = JSON.stringify({ followed: ['yes', 'partly', 'no'].includes(d.followed) ? d.followed : '', best: clean(d.best, 1000), worst: clean(d.worst, 1000), tomorrow: clean(d.tomorrow, 1000) });
   }
-  await run(db, `INSERT INTO day_plans (day, is_sample, markets, debrief, updated_at) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT (day, is_sample) DO UPDATE SET markets = COALESCE(excluded.markets, day_plans.markets), debrief = COALESCE(excluded.debrief, day_plans.debrief), updated_at = excluded.updated_at`,
-    day, sample, markets ?? null, debrief ?? null, Date.now());
+  await run(db, `INSERT INTO day_plans (day, is_sample, markets, debrief, setup, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT (day, is_sample) DO UPDATE SET markets = COALESCE(excluded.markets, day_plans.markets), debrief = COALESCE(excluded.debrief, day_plans.debrief),
+      setup = COALESCE(excluded.setup, day_plans.setup), updated_at = excluded.updated_at`,
+    day, sample, markets ?? null, debrief ?? null, setup ?? null, Date.now());
   return { ok: true, day };
 });
 

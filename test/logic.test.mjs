@@ -330,3 +330,9 @@ test('point value per lot is learned from past trades (median of recent ones)', 
   assert.equal(v[0].n, 3);
   assert.ok(Math.abs(v[0].vpp - 1) < 0.001);
 });
+
+test('trading schedule parses market and Brisbane times', async () => {
+  const { parseSchedule } = await import('../src/api.js');
+  assert.deepEqual(parseSchedule('JP225@10:00-14:00, NAS100@16:00-20:00'), [{ symbol: 'JP225', from: '10:00', to: '14:00' }, { symbol: 'NAS100', from: '16:00', to: '20:00' }]);
+  assert.deepEqual(parseSchedule('bad'), []);
+});

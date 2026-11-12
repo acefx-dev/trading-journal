@@ -1,4 +1,27 @@
-# Trade Journal — v1.9 (connector 1.02)
+# Trade Journal — v1.10 (connector 1.02)
+
+## v1.10: Trading Floor redesign, app icon
+
+The push runs migration `0009`: the A+ ticks are saved per day, and a trading schedule setting (`plan_schedule`) is added.
+
+- **Trading Floor, checklists first:**
+  - Top row: Daily prep, **A+ setup** and Open now with the risk budget, all visible at once.
+    - A+ setup: pick the strategy; your ticks are saved for the day; your edge notes sit underneath.
+  - Bottom row: **Game plan** for one market at a time, and **Up next** news.
+  - The size calculator and Focus mode are gone; Risk Guard Rail does the sizing.
+- **Trading schedule** (Settings → Trading Floor), e.g. JP225 10:00–14:00 and NAS100 16:00–20:00.
+  - The top bar and the game plan follow the market of the current or next window.
+  - The game plan has a dropdown for any other market, or Other… to type one.
+- **Today's limits:** "Ideas 0 of 2 · Losses 0 of 2".
+  - Max ideas counts every idea, win or loss.
+  - The loss stop counts losing ideas only.
+- **Past debriefs:** click a day on the Calendar to see that day's debrief and game plan; **Write** or **Edit** adds or changes the debrief.
+- **Fix:** checklist items you removed from a strategy no longer show (the "1" and "2" on TrendFlow).
+- **Settings:** Warnings & Telegram alerts removed from the Settings page. The settings themselves are kept.
+- **App icon:** a book-and-chart icon for the iPhone home screen, browser tab and Android, with a web app manifest.
+  - On iPhone, open the journal in Safari → Share → **Add to Home Screen**.
+  - If you added it before, remove the old shortcut and add it again so the new icon is used.
+
 
 ## v1.9: Trading Floor v2
 

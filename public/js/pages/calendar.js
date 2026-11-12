@@ -1,5 +1,6 @@
 import { html, useState, useStore, useData, api, scopeQs, fmt, sgn, cls, Money, R, Dir, Loading, PageHead, Icon, todayBne } from '../lib.js';
 import { SampleEmpty } from './dashboard.js';
+import { Debrief } from './floor.js';
 
 const WD = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const noon = (d) => Date.parse(d + 'T12:00:00+10:00');
@@ -106,6 +107,7 @@ function DayPanel({ day, x, prep }) {
     <div class="scrolly stack" style="padding:12px 16px;gap:12px">
       <div class="box hstack" style="flex-wrap:nowrap;gap:10px"><span style=${`width:9px;height:9px;border-radius:50%;flex:0 0 9px;${!prep ? 'background:var(--line3)' : full ? 'background:var(--blue)' : 'box-shadow:inset 0 0 0 1.5px var(--amber)'}`}></span>
         <span style="font-size:12.5px;flex:1">${!prep ? 'No daily prep recorded' : full ? `Daily prep complete · ${prep.done} of ${prep.total}` : `Daily prep incomplete · ${prep.done} of ${prep.total}`}</span><a href="#/strategies" style="font-size:12px">Checklist</a></div>
+      <${DayNotes} day=${day}/>
       ${x && Object.keys(x.accounts).length > 1 && html`<div class="hstack" style="gap:6px">${Object.entries(x.accounts).map(([n, v]) => html`<span class="chip">${n} <${Money} v=${v}/></span>`)}</div>`}
       <div class="field"><span class="lbl">Ideas closed this day</span>
         <${Loading} state=${st}>${(d) => d.items.length ? d.items.map((i) => html`<a href=${'#/ideas/' + i.id}
@@ -117,4 +119,29 @@ function DayPanel({ day, x, prep }) {
       <a href="#/review" class="btn sm" style="justify-content:center">Open the weekly review</a>
     </div>
   </section>`;
+}
+
+/** That day's end-of-day debrief and game plan (Trading Floor), with a button to write or edit the debrief. */
+function DayNotes({ day }) {
+  const s = useStore();
+  const st = useData(() => api('/plan?day=' + day), [day, s.mode]);
+  const [edit, setEdit] = useState(false);
+  const p = st.data;
+  const db = p && p.debrief;
+  const plans = p && p.markets ? p.markets.filter((m) => m.plan || m.bias || m.levels.some((l) => l.value)) : [];
+  const FOL = { yes: ['g', 'Followed the plan'], partly: ['a', 'Partly followed'], no: ['r', 'Did not follow'] };
+  const BIAS = { long: '▲ Long', short: '▼ Short', wait: 'Wait' };
+  const future = day > new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Brisbane' }).format(new Date());
+  return html`<div class="box stack" style="gap:10px">
+    <div class="spread"><span class="cap">End-of-day debrief</span>${!future && html`<button type="button" class="btn sm" onClick=${() => setEdit(true)}>${db ? 'Edit' : 'Write'}</button>`}</div>
+    ${!p ? html`<span class="sub">Loading…</span>` : db && (db.best || db.worst || db.tomorrow || db.followed) ? html`
+      ${db.followed && html`<span class=${'chip ' + FOL[db.followed][0]} style="align-self:flex-start">${FOL[db.followed][1]}</span>`}
+      ${[['Best decision', db.best], ['Worst decision', db.worst], ['For tomorrow', db.tomorrow]].filter(([, v]) => v).map(([k, v]) => html`<div><div class="sub">${k}</div><div style="font-size:13px;line-height:1.45;white-space:pre-wrap">${v}</div></div>`)}`
+      : html`<span class="sub">${future ? 'Not yet.' : 'No debrief for this day.'}</span>`}
+    ${plans.length > 0 && html`<div class="cap" style="margin-top:4px">Game plan</div>
+      ${plans.map((m) => html`<div><b style="font-size:13px">${m.symbol}</b>${m.bias ? html` <span class="sub">${BIAS[m.bias]}</span>` : ''}
+        ${m.levels.some((l) => l.value) && html`<div class="sub">${m.levels.filter((l) => l.value).map((l) => `${l.label} ${l.value}`).join(' · ')}</div>`}
+        ${m.plan && html`<div style="font-size:12.5px;line-height:1.45;border-left:2px solid #2E4A86;padding-left:9px;margin-top:4px;white-space:pre-wrap">${m.plan}</div>`}</div>`)}`}
+    ${edit && html`<${Debrief} st=${st} onClose=${() => setEdit(false)}/>`}
+  </div>`;
 }

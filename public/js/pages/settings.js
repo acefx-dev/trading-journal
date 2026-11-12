@@ -6,16 +6,18 @@ export function Settings() {
   return html`<${PageHead} title="Settings" sub=${'Signed in as ' + b.user} filter=${false}/>
     <div class="row">
       <div class="col" style="flex:1 1 420px"><${DefaultView} b=${b}/><${Grouping} b=${b}/><${Data} b=${b}/></div>
-      <div class="col" style="flex:1 1 420px"><${FloorSettings} b=${b}/><${Alerts} b=${b}/><${Aliases} b=${b}/><${Mistakes} b=${b}/></div>
+      <div class="col" style="flex:1 1 420px"><${FloorSettings} b=${b}/><${Aliases} b=${b}/><${Mistakes} b=${b}/></div>
     </div>`;
 }
 
 function FloorSettings({ b }) {
   const st = b.settings;
-  const init = { trade_window: st.trade_window || '10:00-14:00', max_ideas_day: st.max_ideas_day ?? '2', loss_stop: st.loss_stop ?? '2', news_pause_min: st.news_pause_min ?? '15',
+  const init = { plan_schedule: st.plan_schedule ?? 'JP225@10:00-14:00,NAS100@16:00-20:00', max_ideas_day: st.max_ideas_day ?? '2', loss_stop: st.loss_stop ?? '2', news_pause_min: st.news_pause_min ?? '15',
     plan_markets: st.plan_markets || 'JP225,NAS100', plan_levels: st.plan_levels || '', quote_symbols: st.quote_symbols || '', calendar_ccys: st.calendar_ccys || 'USD,JPY,EUR,GBP,AUD,NZD,CAD,CHF' };
   const [v, setV] = useState(init);
-  const [w0, w1] = v.trade_window.split('-');
+  const rows = (v.plan_schedule || '').split(',').map((x) => x.trim()).filter(Boolean).map((x) => { const m = /^([^@]*)@(\d{2}:\d{2})-(\d{2}:\d{2})$/.exec(x); return m ? { symbol: m[1], from: m[2], to: m[3] } : { symbol: x, from: '', to: '' }; });
+  const setRows = (r) => setV({ ...v, plan_schedule: r.filter((x) => x.symbol && x.from && x.to).map((x) => `${x.symbol.trim().toUpperCase()}@${x.from}-${x.to}`).join(',') });
+  const upd = (k, f) => setRows(rows.map((x, j) => (j === k ? f(x) : x)));
   const set = (k) => (e) => setV({ ...v, [k]: e.target.value });
   const save = async (e) => {
     e.preventDefault();
@@ -23,11 +25,17 @@ function FloorSettings({ b }) {
   };
   const F = (id, label, input) => html`<div class="field"><label class="lbl" for=${id}>${label}</label>${input}</div>`;
   return html`<form class="card stack" onSubmit=${save}><h2 class="h2">Trading Floor</h2>
+    <div class="field"><span class="lbl">Trading schedule (Brisbane time) · the Floor's window and game plan follow it</span>
+      ${rows.map((r, k) => html`<div class="hstack" style="gap:6px;flex-wrap:nowrap;margin-top:6px">
+        <input class="inp sm" style="width:110px" aria-label="Market" value=${r.symbol} onInput=${(e) => upd(k, (x) => ({ ...x, symbol: e.target.value }))}/>
+        <input class="inp sm" type="time" aria-label="From" value=${r.from} onInput=${(e) => upd(k, (x) => ({ ...x, from: e.target.value }))}/>
+        <span class="sub">to</span>
+        <input class="inp sm" type="time" aria-label="To" value=${r.to} onInput=${(e) => upd(k, (x) => ({ ...x, to: e.target.value }))}/>
+        <button type="button" class="btn sm ghost" aria-label="Remove" onClick=${() => setRows(rows.filter((_, j) => j !== k))}>✕</button></div>`)}
+      <div style="margin-top:6px"><button type="button" class="btn sm" onClick=${() => setV({ ...v, plan_schedule: (v.plan_schedule ? v.plan_schedule + ',' : '') + 'XAUUSD@18:00-21:00' })}>Add a market</button></div></div>
     <div class="fields">
-      ${F('tw0', 'Trading window starts (Brisbane)', html`<input id="tw0" class="inp" type="time" value=${w0} onInput=${(e) => setV({ ...v, trade_window: e.target.value + '-' + w1 })}/>`)}
-      ${F('tw1', 'Trading window ends', html`<input id="tw1" class="inp" type="time" value=${w1} onInput=${(e) => setV({ ...v, trade_window: w0 + '-' + e.target.value })}/>`)}
-      ${F('mid', 'Max ideas per day (0 = no limit)', html`<input id="mid" class="inp" type="number" min="0" max="20" value=${v.max_ideas_day} onInput=${set('max_ideas_day')}/>`)}
-      ${F('lst', 'Stop for the day after this many losses (0 = off)', html`<input id="lst" class="inp" type="number" min="0" max="10" value=${v.loss_stop} onInput=${set('loss_stop')}/>`)}
+      ${F('mid', 'Max trade ideas per day, wins or losses (0 = no limit)', html`<input id="mid" class="inp" type="number" min="0" max="20" value=${v.max_ideas_day} onInput=${set('max_ideas_day')}/>`)}
+      ${F('lst', 'Stop for the day after this many losing ideas (0 = off)', html`<input id="lst" class="inp" type="number" min="0" max="10" value=${v.loss_stop} onInput=${set('loss_stop')}/>`)}
       ${F('npm', 'No new trades this many minutes either side of high-impact news', html`<input id="npm" class="inp" type="number" min="0" max="120" value=${v.news_pause_min} onInput=${set('news_pause_min')}/>`)}
       ${F('ccy', 'Calendar currencies', html`<input id="ccy" class="inp" value=${v.calendar_ccys} onInput=${set('calendar_ccys')}/>`)}
     </div>

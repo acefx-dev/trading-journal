@@ -381,3 +381,25 @@ textarea.inp { padding: 10px 12px; min-height: 110px; resize: vertical; line-hei
   .szin { grid-template-columns: 1fr 1fr; }
   .floor-tools { flex-wrap: wrap; }
 }
+
+/* ---- Trading Floor redesign (v1.10): checklists first ---- */
+.floor3 { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, .9fr);
+  grid-template-areas: "prep setup live" "plan plan news"; grid-template-rows: auto minmax(0, 1fr); }
+.floor3 > div { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.floor3 > div > .panel { flex: 1 1 auto; min-height: 0; }
+.f-prep { grid-area: prep; } .f-setup { grid-area: setup; } .f-live { grid-area: live; gap: 12px; } .f-plan { grid-area: plan; } .f-news { grid-area: news; }
+.f-live > .panel { flex: 1 1 0; }
+.f-live > .panel:last-child { flex: 0 0 auto; }
+.gp1 { padding: 0 16px 14px; display: flex; flex-direction: column; gap: 10px; }
+.gplv1 { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px 12px; }
+.gpl { display: flex; flex-direction: column; gap: 4px; }
+.gpl .inp.sm { height: 30px; min-height: 30px; text-align: right; }
+.edge { display: flex; gap: 10px; padding: 7px 0; font-size: 12.5px; line-height: 1.4; border-top: 1px solid #161B24; }
+.edge:first-of-type { border-top: 0; }
+@media (max-width: 1279px) {
+  .floor3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "prep setup" "plan plan" "live news"; grid-template-rows: none; }
+}
+@media (max-width: 760px) {
+  .floor3 { grid-template-columns: minmax(0, 1fr); grid-template-areas: "prep" "setup" "plan" "live" "news"; }
+  .f-plan .ph { flex-wrap: wrap; gap: 8px; }
+}
