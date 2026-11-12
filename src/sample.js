@@ -55,6 +55,7 @@ export async function clearSample(db) {
     stmt(db, 'DELETE FROM prep_sentiment WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM strategies WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM sl_events WHERE account_id IN (SELECT id FROM accounts WHERE is_sample = 1)'),
+    stmt(db, 'DELETE FROM day_plans WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM path_episodes WHERE account_id IN (SELECT id FROM accounts WHERE is_sample = 1)'),
     stmt(db, 'UPDATE accounts SET master_account_id = NULL WHERE is_sample = 1'),
     stmt(db, 'DELETE FROM accounts WHERE is_sample = 1'),

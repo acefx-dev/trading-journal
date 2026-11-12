@@ -1,4 +1,29 @@
-# Trade Journal — v1.8 (connector 1.02)
+# Trade Journal — v1.9 (connector 1.02)
+
+## v1.9: Trading Floor v2
+
+The push runs migration `0008` (table `day_plans` and the floor settings). Set your preferences under **Settings → Trading Floor**: trading window (default 10:00–14:00 Brisbane), max ideas per day (2), stop after losses (2), news pause (15 min), game-plan markets and levels, and live-price symbols.
+
+- **Top bar:**
+  - Your trading window: open or closed, time left, and the session.
+  - News guard: high-impact news inside the window, with the pause times either side.
+  - Today: ideas taken against your maximum, realised P&L, losses in a row, and "Stop for today" once you reach the loss limit.
+  - Live prices from TradingView's free ticker widget.
+- **Game plan:** bias, key levels and an if-then plan for each market. It saves as you type and appears at the top of each idea's Review tab for that day and market.
+- **Size the trade:** enter market, entry, stop and optional target to get the lots for each account from its per-idea limit.
+  - The point value per lot is learned from each account's own recent trades with a stop (the median of the last 12).
+  - Copier accounts show "copied from …". It only calculates; you place orders in the Risk Guard Rail panel.
+- **Risk budget today**, and **Open now** (floating P&L, R so far, risk held, best so far).
+- **Your edge right now**, from the last 60 days:
+  - how your most-used strategy does inside your trading window (win rate, average R, best hour);
+  - your top mistake this month;
+  - how your trades did after hitting the loss limit;
+  - trades with your bias compared with against it;
+  - the A+ checklist (that strategy's rules).
+- **Up next · high impact**, also on the dashboard above Accounts.
+- **Header buttons:** Calendar, Market hours and Profit split open in a pop-up window. **Focus mode** shows only the sizing, risk and open idea. **End-of-day debrief** has 3 questions, saved with the day.
+- **Event feed:** now taken from TradingView's economic calendar data, with Forex Factory as a backup (both unofficial; cached for 30 minutes). If neither answers, the panel shows which sources failed.
+
 
 ## v1.8: calmer dashboard and the Trading Floor
 

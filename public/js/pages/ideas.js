@@ -420,6 +420,21 @@ function Audit({ items }) {
 
 const EMOTIONS = ['Calm', 'Confident', 'Impatient', 'Anxious', 'FOMO', 'Frustrated', 'Tired'];
 
+/** The game plan written that day for this market (Trading Floor), to compare plan and execution. */
+function PlanNote({ i }) {
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Brisbane' }).format(i.open_time);
+  const st = useData(() => api('/plan?day=' + day), [i.id]);
+  const m = st.data && st.data.markets ? st.data.markets.find((x) => x.symbol.toUpperCase() === i.symbol.toUpperCase()) : null;
+  if (!m || (!m.plan && !m.bias && !m.levels.some((l) => l.value))) return null;
+  const bias = { long: '▲ Long', short: '▼ Short', wait: 'Wait' }[m.bias];
+  const matches = m.bias === 'wait' ? false : m.bias ? m.bias === i.direction : null;
+  return html`<div class="box stack" style="gap:6px;border-color:#22304D">
+    <div class="spread"><span class="cap">Game plan that day · ${m.symbol}</span>${bias && html`<span class=${cls('chip', matches === true ? 'g' : matches === false ? 'a' : '')}>${bias}${matches === false ? ' · traded ' + i.direction : ''}</span>`}</div>
+    ${m.levels.some((l) => l.value) && html`<div class="sub">${m.levels.filter((l) => l.value).map((l) => `${l.label} ${l.value}`).join(' · ')}</div>`}
+    ${m.plan && html`<div style="font-size:13px;line-height:1.5;border-left:2px solid #2E4A86;padding-left:10px">${m.plan}</div>`}
+  </div>`;
+}
+
 function Review({ d, reload }) {
   const s = useStore();
   const i = d.idea;
@@ -445,6 +460,7 @@ function Review({ d, reload }) {
   }, [notes, dirty]);
   const done = d.checklist.filter((c) => checks[c.id]).length;
   return html`<div class="stack" style="gap:14px">
+    <${PlanNote} i=${i}/>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
       <div class="stack" style="gap:10px">
         <div class="field"><label class="lbl" for="rstrat">Strategy</label>

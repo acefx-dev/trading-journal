@@ -6,8 +6,37 @@ export function Settings() {
   return html`<${PageHead} title="Settings" sub=${'Signed in as ' + b.user} filter=${false}/>
     <div class="row">
       <div class="col" style="flex:1 1 420px"><${DefaultView} b=${b}/><${Grouping} b=${b}/><${Data} b=${b}/></div>
-      <div class="col" style="flex:1 1 420px"><${Alerts} b=${b}/><${Aliases} b=${b}/><${Mistakes} b=${b}/></div>
+      <div class="col" style="flex:1 1 420px"><${FloorSettings} b=${b}/><${Alerts} b=${b}/><${Aliases} b=${b}/><${Mistakes} b=${b}/></div>
     </div>`;
+}
+
+function FloorSettings({ b }) {
+  const st = b.settings;
+  const init = { trade_window: st.trade_window || '10:00-14:00', max_ideas_day: st.max_ideas_day ?? '2', loss_stop: st.loss_stop ?? '2', news_pause_min: st.news_pause_min ?? '15',
+    plan_markets: st.plan_markets || 'JP225,NAS100', plan_levels: st.plan_levels || '', quote_symbols: st.quote_symbols || '', calendar_ccys: st.calendar_ccys || 'USD,JPY,EUR,GBP,AUD,NZD,CAD,CHF' };
+  const [v, setV] = useState(init);
+  const [w0, w1] = v.trade_window.split('-');
+  const set = (k) => (e) => setV({ ...v, [k]: e.target.value });
+  const save = async (e) => {
+    e.preventDefault();
+    try { await api('/settings', { method: 'PUT', body: v }); await reloadBoot(); toast('Trading Floor settings saved'); } catch (err) { toast(err.message, true); }
+  };
+  const F = (id, label, input) => html`<div class="field"><label class="lbl" for=${id}>${label}</label>${input}</div>`;
+  return html`<form class="card stack" onSubmit=${save}><h2 class="h2">Trading Floor</h2>
+    <div class="fields">
+      ${F('tw0', 'Trading window starts (Brisbane)', html`<input id="tw0" class="inp" type="time" value=${w0} onInput=${(e) => setV({ ...v, trade_window: e.target.value + '-' + w1 })}/>`)}
+      ${F('tw1', 'Trading window ends', html`<input id="tw1" class="inp" type="time" value=${w1} onInput=${(e) => setV({ ...v, trade_window: w0 + '-' + e.target.value })}/>`)}
+      ${F('mid', 'Max ideas per day (0 = no limit)', html`<input id="mid" class="inp" type="number" min="0" max="20" value=${v.max_ideas_day} onInput=${set('max_ideas_day')}/>`)}
+      ${F('lst', 'Stop for the day after this many losses (0 = off)', html`<input id="lst" class="inp" type="number" min="0" max="10" value=${v.loss_stop} onInput=${set('loss_stop')}/>`)}
+      ${F('npm', 'No new trades this many minutes either side of high-impact news', html`<input id="npm" class="inp" type="number" min="0" max="120" value=${v.news_pause_min} onInput=${set('news_pause_min')}/>`)}
+      ${F('ccy', 'Calendar currencies', html`<input id="ccy" class="inp" value=${v.calendar_ccys} onInput=${set('calendar_ccys')}/>`)}
+    </div>
+    ${F('pm', 'Game plan markets (comma separated)', html`<input id="pm" class="inp" value=${v.plan_markets} onInput=${set('plan_markets')}/>`)}
+    ${F('pl', 'Game plan levels for each market', html`<input id="pl" class="inp" value=${v.plan_levels} onInput=${set('plan_levels')}/>`)}
+    ${F('qs', 'Live prices (TradingView symbol = label)', html`<input id="qs" class="inp" value=${v.quote_symbols} onInput=${set('quote_symbols')} placeholder="OANDA:JP225USD=JP225,OANDA:NAS100USD=NAS100"/>`)}
+    <div class="sub">Live prices come from TradingView's free widget, so they are TradingView's quotes (e.g. OANDA), not your broker's. The game plan markets and levels apply to new days.</div>
+    <div><button class="btn pri" type="submit">Save</button></div>
+  </form>`;
 }
 
 function DefaultView({ b }) {

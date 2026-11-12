@@ -9,7 +9,8 @@ export const PANELS = {
   kpis: 'Key figures',
   chart: 'Equity',
   ideas: 'Recent ideas',
-  today: 'Today (prep, bias, up next)',
+  today: 'Today (prep and bias)',
+  events: 'Up next · high impact',
   accounts: 'Accounts',
   calendar: 'Economic calendar',
   hours: 'Market hours',
@@ -23,9 +24,9 @@ const P = (id, size) => ({ id, size });
 // the full calendar, market hours, profit split and prep live on the Trading Floor; they can be shown here too
 const EXTRAS = ['calendar', 'hours', 'split', 'prep'];
 export const DEFAULTS = {
-  desktop: { cols: [[P('chart', 'auto'), P('ideas', 'l')], [P('today', 'auto'), P('accounts', 'l'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1.9, 1], hidden: [...EXTRAS] },
-  tablet: { cols: [[P('chart', 'auto'), P('ideas', 'm')], [P('today', 'auto'), P('accounts', 'auto'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1.5, 1], hidden: [...EXTRAS] },
-  phone: { cols: [[P('today', 'auto'), P('chart', 'auto'), P('ideas', 'm'), P('accounts', 'auto'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1], hidden: [...EXTRAS] },
+  desktop: { cols: [[P('chart', 'auto'), P('ideas', 'l')], [P('today', 'auto'), P('events', 'auto'), P('accounts', 'l'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1.9, 1], hidden: [...EXTRAS] },
+  tablet: { cols: [[P('chart', 'auto'), P('ideas', 'm')], [P('today', 'auto'), P('events', 'auto'), P('accounts', 'auto'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1.5, 1], hidden: [...EXTRAS] },
+  phone: { cols: [[P('today', 'auto'), P('events', 'auto'), P('chart', 'auto'), P('ideas', 'm'), P('accounts', 'auto'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1], hidden: [...EXTRAS] },
 };
 
 const clone = (x) => JSON.parse(JSON.stringify(x));

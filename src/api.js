@@ -142,6 +142,23 @@ on('PUT', '/settings', async ({ db, request }) => {
     ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', k, list.join(',')));
   }
   if (b.sentiment_prompt != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'sentiment_prompt', String(b.sentiment_prompt).slice(0, 8000)));
+  // trading floor settings
+  const FLOOR = {
+    trade_window: (v) => /^\d{2}:\d{2}-\d{2}:\d{2}$/.test(v) ? v : null,
+    max_ideas_day: (v) => (Number(v) >= 0 && Number(v) <= 20 ? String(Math.round(Number(v))) : null),
+    loss_stop: (v) => (Number(v) >= 0 && Number(v) <= 10 ? String(Math.round(Number(v))) : null),
+    news_pause_min: (v) => (Number(v) >= 0 && Number(v) <= 120 ? String(Math.round(Number(v))) : null),
+    plan_markets: (v) => String(v).slice(0, 200),
+    plan_levels: (v) => String(v).slice(0, 400),
+    quote_symbols: (v) => String(v).slice(0, 400),
+    calendar_ccys: (v) => (/^[A-Za-z, ]*$/.test(v) ? String(v).toUpperCase().slice(0, 60) : null),
+  };
+  for (const [k, f] of Object.entries(FLOOR)) {
+    if (b[k] == null) continue;
+    const v = f(String(b[k]).trim());
+    if (v == null) throw new HttpError(400, `Invalid value for ${k.replace(/_/g, ' ')}`);
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', k, v));
+  }
   if (b.dash_layout != null) {
     const txt = JSON.stringify(b.dash_layout);
     if (txt.length > 8000 || typeof b.dash_layout !== 'object') throw new HttpError(400, 'Dashboard layout is too large');
@@ -1012,9 +1029,22 @@ on('GET', '/fx', async ({ db }) => {
 });
 
 /**
- * Upcoming high-impact economic events (Forex Factory's public weekly feed, cached for an hour; unofficial,
- * so the dashboard falls back to the calendar widget when it can't be read).
+ * Upcoming high-impact economic events. Source 1: TradingView's economic calendar (the data behind its free
+ * calendar widget); source 2: Forex Factory's weekly feed. Both are unofficial, so results are cached for
+ * 30 minutes and the panels fall back to the calendar widget if neither answers.
  */
+const CCY_COUNTRY = { USD: 'US', JPY: 'JP', EUR: 'EU', GBP: 'GB', AUD: 'AU', NZD: 'NZ', CAD: 'CA', CHF: 'CH', CNY: 'CN' };
+const fmtVal = (v, unit, scale) => (v == null || v === '' ? '' : `${Math.round(Number(v) * 1000) / 1000}${scale || ''}${unit === '%' ? '%' : ''}`);
+
+export function parseTvEvents(list, ccys, now = Date.now()) {
+  return (Array.isArray(list) ? list : [])
+    .filter((e) => e && Number(e.importance) >= 1 && ccys.includes(String(e.currency || '').toUpperCase()))
+    .map((e) => ({ t: Date.parse(e.date), ccy: String(e.currency).toUpperCase(), title: String(e.title || '').slice(0, 80),
+      forecast: fmtVal(e.forecast, e.unit, e.scale), previous: fmtVal(e.previous, e.unit, e.scale), actual: fmtVal(e.actual, e.unit, e.scale) }))
+    .filter((e) => isFinite(e.t) && e.t >= now - 30 * 60000)
+    .sort((a, b) => a.t - b.t);
+}
+
 export function parseFfEvents(list, ccys, now = Date.now()) {
   return (Array.isArray(list) ? list : [])
     .filter((e) => e && e.impact === 'High' && ccys.includes(String(e.country || '').toUpperCase()))
@@ -1023,26 +1053,106 @@ export function parseFfEvents(list, ccys, now = Date.now()) {
     .sort((a, b) => a.t - b.t);
 }
 
+async function fetchEvents(ccys) {
+  const tried = [];
+  const now = Date.now();
+  const countries = [...new Set(ccys.map((c) => CCY_COUNTRY[c]).filter(Boolean))].join(',');
+  try {
+    const url = `https://economic-calendar.tradingview.com/events?from=${new Date(now - 3600000).toISOString()}&to=${new Date(now + 8 * 86400000).toISOString()}&countries=${countries}&minImportance=1`;
+    const r = await fetch(url, { headers: { Accept: 'application/json', Origin: 'https://www.tradingview-widget.com', Referer: 'https://www.tradingview-widget.com/', 'User-Agent': 'Mozilla/5.0 (compatible; trade-journal)' } });
+    tried.push({ source: 'TradingView', status: r.status });
+    if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.result)) return { items: parseTvEvents(j.result, ccys, now), source: 'TradingView', tried }; }
+  } catch (e) { tried.push({ source: 'TradingView', error: String(e.message || e).slice(0, 80) }); }
+  try {
+    const r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36' } });
+    tried.push({ source: 'Forex Factory', status: r.status });
+    if (r.ok) return { items: parseFfEvents(await r.json(), ccys, now), source: 'Forex Factory', tried };
+  } catch (e) { tried.push({ source: 'Forex Factory', error: String(e.message || e).slice(0, 80) }); }
+  return { items: null, tried };
+}
+
 on('GET', '/events', async ({ db, q }) => {
   const set = await getSettings(db);
   const ccys = String(set.raw.calendar_ccys || 'USD,JPY,EUR,GBP,AUD,NZD,CAD,CHF').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean);
-  const n = Math.min(Number(q.n) || 5, 30);
-  const row = await first(db, "SELECT value FROM settings WHERE key = 'ff_cache'");
+  const n = Math.min(Number(q.n) || 5, 40);
+  const row = await first(db, "SELECT value FROM settings WHERE key = 'ev_cache'");
   let cache = null;
   try { cache = row ? JSON.parse(row.value) : null; } catch { cache = null; }
-  if (!cache || Date.now() - cache.fetched > 3600000) {
-    try {
-      const r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', { headers: { Accept: 'application/json', 'User-Agent': 'trade-journal/1.8' } });
-      if (r.ok) {
-        const list = await r.json();
-        const high = (Array.isArray(list) ? list : []).filter((e) => e && e.impact === 'High');
-        cache = { fetched: Date.now(), items: high };
-        await run(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'ff_cache', JSON.stringify(cache));
-      }
-    } catch { /* keep the old copy */ }
+  let tried = null;
+  if (!cache || Date.now() - cache.fetched > 30 * 60000 || cache.ccys !== ccys.join(',')) {
+    const got = await fetchEvents(ccys);
+    tried = got.tried;
+    if (got.items) {
+      cache = { fetched: Date.now(), source: got.source, ccys: ccys.join(','), items: got.items.slice(0, 200) };
+      await run(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'ev_cache', JSON.stringify(cache));
+    }
   }
-  if (!cache) return { items: [], error: 'Calendar feed unavailable', source: 'Forex Factory' };
-  return { items: parseFfEvents(cache.items, ccys).slice(0, n), fetched: cache.fetched, stale: Date.now() - cache.fetched > 3600000, source: 'Forex Factory' };
+  if (!cache) return { items: [], error: 'Calendar feed unavailable', tried };
+  const now = Date.now();
+  return { items: cache.items.filter((e) => e.t >= now - 30 * 60000).slice(0, n), fetched: cache.fetched, source: cache.source,
+    stale: now - cache.fetched > 30 * 60000, tried };
+});
+
+// ------------------------------------------------------------------ trading floor: game plan, debrief, sizing
+
+on('GET', '/plan', async ({ db, sample, q }) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(q.day || '') ? q.day : bneDay(Date.now());
+  const row = await first(db, 'SELECT * FROM day_plans WHERE day = ? AND is_sample = ?', day, sample);
+  const set = await getSettings(db);
+  const parse = (v, d) => { try { return v ? JSON.parse(v) : d; } catch { return d; } };
+  return { day, markets: parse(row && row.markets, null), debrief: parse(row && row.debrief, null), updated_at: row ? row.updated_at : null,
+    defaults: { markets: String(set.raw.plan_markets || 'JP225,NAS100').split(',').map((x) => x.trim()).filter(Boolean),
+      levels: String(set.raw.plan_levels || '').split(',').map((x) => x.trim()).filter(Boolean) } };
+});
+
+on('PUT', '/plan', async ({ db, sample, request }) => {
+  const b = await request.json();
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(b.day || '') ? b.day : bneDay(Date.now());
+  const clean = (x, n) => String(x == null ? '' : x).slice(0, n);
+  let markets, debrief;
+  if (b.markets !== undefined) {
+    if (!Array.isArray(b.markets) || b.markets.length > 8) throw new HttpError(400, 'Up to 8 markets');
+    markets = JSON.stringify(b.markets.map((m) => ({ symbol: clean(m.symbol, 20), bias: ['long', 'short', 'wait', ''].includes(m.bias) ? m.bias : '',
+      levels: (Array.isArray(m.levels) ? m.levels : []).slice(0, 12).map((l) => ({ label: clean(l.label, 30), value: clean(l.value, 30) })), plan: clean(m.plan, 1500) })));
+  }
+  if (b.debrief !== undefined) {
+    const d = b.debrief || {};
+    debrief = JSON.stringify({ followed: ['yes', 'partly', 'no'].includes(d.followed) ? d.followed : '', best: clean(d.best, 1000), worst: clean(d.worst, 1000), tomorrow: clean(d.tomorrow, 1000) });
+  }
+  await run(db, `INSERT INTO day_plans (day, is_sample, markets, debrief, updated_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (day, is_sample) DO UPDATE SET markets = COALESCE(excluded.markets, day_plans.markets), debrief = COALESCE(excluded.debrief, day_plans.debrief), updated_at = excluded.updated_at`,
+    day, sample, markets ?? null, debrief ?? null, Date.now());
+  return { ok: true, day };
+});
+
+/**
+ * Value of one point per lot, learned from each account's own recent trades with a stop:
+ * risk ÷ (lots × |entry − stop|), median of the last 12 per instrument. Plus each account's per-idea limit.
+ */
+export function pointValues(rows) {
+  const by = new Map();
+  for (const r of rows) {
+    const dist = Math.abs(r.open_price - r.initial_sl);
+    if (!(r.risk > 0 && r.volume > 0 && dist > 0)) continue;
+    const k = r.account_id + '|' + r.symbol;
+    const list = by.get(k) || by.set(k, { account_id: r.account_id, symbol: r.symbol, raw: r.raw_symbol, vals: [] }).get(k);
+    if (list.vals.length < 12) list.vals.push(r.risk / (r.volume * dist));
+  }
+  return [...by.values()].map((x) => {
+    const v = [...x.vals].sort((a, b) => a - b), m = v.length >> 1;
+    return { account_id: x.account_id, symbol: x.symbol, raw: x.raw, n: v.length, vpp: round(v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2, 6) };
+  });
+}
+
+on('GET', '/sizing', async ({ db, sample }) => {
+  const accts = await all(db, "SELECT id, name, role, master_account_id, size, kind, max_risk_trade_pct FROM accounts WHERE is_sample = ? AND status = 'active' ORDER BY id", sample);
+  const rows = await all(db, `SELECT p.account_id, i.symbol, p.symbol AS raw_symbol, p.risk, p.volume, p.open_price, p.initial_sl
+    FROM positions p JOIN ideas i ON i.id = p.idea_id JOIN accounts a ON a.id = p.account_id
+    WHERE a.is_sample = ? AND p.risk > 0 AND p.initial_sl IS NOT NULL ORDER BY p.open_time DESC LIMIT 3000`, sample);
+  const vals = pointValues(rows);
+  return { accounts: accts.map((a) => ({ id: a.id, name: a.name, role: a.role, master_account_id: a.master_account_id, kind: a.kind,
+    limit: a.max_risk_trade_pct && a.size ? round(a.size * a.max_risk_trade_pct / 100, 2) : null, limitPct: a.max_risk_trade_pct,
+    values: Object.fromEntries(vals.filter((v) => v.account_id === a.id).map((v) => [v.symbol, { vpp: v.vpp, n: v.n, raw: v.raw }])) })) };
 });
 
 on('GET', '/payouts', async ({ db, sample }) => {

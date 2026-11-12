@@ -304,3 +304,29 @@ test('economic events: high impact, chosen currencies, upcoming only, in time or
   assert.deepEqual(r.map((e) => e.title), ['CPI y/y', 'GDP q/q']);
   assert.equal(r[0].t, Date.parse('2026-11-12T13:30:00Z'));
 });
+
+test('TradingView events: high importance, chosen currencies, formatted values', async () => {
+  const { parseTvEvents } = await import('../src/api.js');
+  const now = Date.parse('2026-11-12T02:00:00Z');
+  const r = parseTvEvents([
+    { title: 'Existing Home Sales', currency: 'USD', date: '2026-11-12T15:00:00.000Z', importance: 1, forecast: 3.85, previous: 3.99, scale: 'M' },
+    { title: 'PPI MoM', currency: 'USD', date: '2026-11-13T13:30:00.000Z', importance: 1, forecast: 0.4, previous: 1.3, unit: '%' },
+    { title: 'Medium', currency: 'USD', date: '2026-11-12T16:00:00.000Z', importance: 0 },
+    { title: 'CNY', currency: 'CNY', date: '2026-11-12T16:00:00.000Z', importance: 1 },
+  ], ['USD', 'JPY'], now);
+  assert.deepEqual(r.map((e) => [e.title, e.forecast, e.previous]), [['Existing Home Sales', '3.85M', '3.99M'], ['PPI MoM', '0.4%', '1.3%']]);
+});
+
+test('point value per lot is learned from past trades (median of recent ones)', async () => {
+  const { pointValues } = await import('../src/api.js');
+  const rows = [
+    { account_id: 1, symbol: 'JP225', raw_symbol: 'JPN225', risk: 300, volume: 3.5, open_price: 52040, initial_sl: 51954.29 },
+    { account_id: 1, symbol: 'JP225', raw_symbol: 'JPN225', risk: 200, volume: 2, open_price: 52000, initial_sl: 51900 },
+    { account_id: 1, symbol: 'JP225', raw_symbol: 'JPN225', risk: 500, volume: 5, open_price: 52000, initial_sl: 51899 },
+    { account_id: 1, symbol: 'NAS100', raw_symbol: 'NAS100', risk: 0, volume: 1, open_price: 1, initial_sl: 0.5 },
+  ];
+  const v = pointValues(rows);
+  assert.equal(v.length, 1);
+  assert.equal(v[0].n, 3);
+  assert.ok(Math.abs(v[0].vpp - 1) < 0.001);
+});

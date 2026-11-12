@@ -1,5 +1,6 @@
 import { html, useState, useEffect, useRef, useStore, useData, api, scopeQs, fmt, sgn, cls, Money, R, Dir, Bar, Loading, LineChart, PageHead, toast, store, setStore, reloadBoot, kindLabel, roleLabel, Icon } from '../lib.js';
 import { sessionsInBrisbane, openSessions, SESSIONS, tzOffsetMs } from '../sessions.js';
+import { UpNext } from './floor.js';
 import { PANELS, SIZES, DEFAULTS, normalise, useScreen, movePanel, nudge, setSize, setHidden, setColumns, setWidth } from '../dashlayout.js';
 
 const COLORS = ['#5B8CFF', '#F5A524', '#2EC4B6', '#C38BFF', '#FF8FB1'];
@@ -30,7 +31,7 @@ export function Dashboard() {
 function Body({ d, reload, edit, setEdit }) {
   const s = useStore();
   const { bp, fit } = useScreen();
-  const all = (() => { try { const v = JSON.parse(s.boot.settings.dash_layout || '{}'); return v && v.v === 2 ? v : { v: 2 }; } catch { return { v: 2 }; } })();
+  const all = (() => { try { const v = JSON.parse(s.boot.settings.dash_layout || '{}'); return v && v.v === 3 ? v : { v: 3 }; } catch { return { v: 3 }; } })();
   const [layout, setLayoutState] = useState(() => normalise(all[bp], bp));
   useEffect(() => { setLayoutState(normalise(all[bp], bp)); }, [bp, s.boot.settings.dash_layout]);
   const save = async (l) => {
@@ -42,11 +43,12 @@ function Body({ d, reload, edit, setEdit }) {
 
   const s30 = d.stats30, ms = d.monthSummary;
   const ideas = [...d.open, ...d.recent];
-  const events = useData(() => api('/events?n=4').catch(() => ({ items: [] })), []);
+  const events = useData(() => api('/events?n=4').catch((e) => ({ items: [], error: e.message })), []);
   const panels = {
     chart: () => html`<${EquityPanel} accounts=${d.accounts}/>`,
     ideas: () => html`<${RecentIdeas} ideas=${ideas} open=${d.open.length}/>`,
-    today: () => html`<${TodayPanel} d=${d} reload=${reload} events=${events.data}/>`,
+    today: () => html`<${TodayPanel} d=${d} reload=${reload}/>`,
+    events: () => html`<${UpNext} st=${events} n=${4} compact/>`,
     accounts: () => html`<${AccountsList} accounts=${d.accounts}/>`,
     calendar: () => html`<${EconCalendar}/>`,
     hours: () => html`<${Sessions}/>`,
@@ -245,18 +247,13 @@ function RecentIdeas({ ideas, open }) {
 }
 
 /** Today: prep progress, the bias, and the next high-impact events. The full tools live on the Trading Floor. */
-function TodayPanel({ d, reload, events }) {
+function TodayPanel({ d, reload }) {
   const items = d.prep.items, done = items.filter((i) => i.checked).length;
-  const evs = events && events.items ? events.items.slice(0, 3) : null;
   return html`<section class="panel">
     <div class="ph"><h2>Today</h2><a href="#/floor" class="sub num" style="font-size:12px">${done} / ${items.length} prep →</a></div>
     <div class="pb stack" style="gap:14px;padding-top:0">
       <${Bar} pct=${items.length ? done / items.length * 100 : 0} color=${done >= items.length ? 'var(--pos)' : 'var(--amber)'}/>
       <${SentimentBlock} prep=${d.prep} onSaved=${reload} compact/>
-      <div><div class="spread"><span class="cap">Up next · high impact</span><a href="#/floor" style="font-size:12px">Calendar</a></div>
-        ${evs == null ? html`<div class="sub" style="padding:8px 0">Loading…</div>` : evs.length ? evs.map((e) => html`<div class="evrow">
-          <span class="num" style="color:var(--text2)">${dayTag(e.t)}${bneHM(e.t)}</span><span class="ccy">${e.ccy}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${e.forecast ? `Forecast ${e.forecast} · previous ${e.previous}` : ''}>${e.title}</span><span class="sub">${inTxt(e.t - Date.now())}</span></div>`)
-          : html`<div class="sub" style="padding:8px 0">${events.error ? 'Couldn’t load events. Open the calendar on the Trading Floor.' : 'No more high-impact events this week.'}</div>`}</div>
     </div>
   </section>`;
 }

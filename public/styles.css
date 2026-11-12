@@ -344,3 +344,40 @@ textarea.inp { padding: 10px 12px; min-height: 110px; resize: vertical; line-hei
 .rlist { container-type: inline-size; }
 @container (max-width: 640px) { .irow { grid-template-columns: 96px minmax(0, 1fr) 66px 86px 84px; } .irow .ir-held, .irow .ir-strat { display: none; } }
 @container (max-width: 440px) { .irow { grid-template-columns: 80px minmax(0, 1fr) 70px 74px; gap: 8px; padding: 0 12px; } .irow .ir-pl { display: none; } }
+
+/* ---- Trading Floor v2 (v1.9) ---- */
+.fbar { display: flex; align-items: center; gap: 20px; padding: 12px 16px; flex-wrap: wrap; }
+.fb-win { width: 250px; display: flex; flex-direction: column; gap: 6px; }
+.fb-cell { padding-left: 20px; border-left: 1px solid #1A202B; min-width: 0; max-width: 340px; }
+.fb-v { margin-top: 3px; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fb-quotes { margin-left: auto; flex: 1 1 300px; min-width: 260px; max-width: 520px; height: 56px; overflow: hidden; }
+.fb-quotes iframe { width: 100%; height: 72px; border: 0; display: block; margin-top: -4px; }
+.floor2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr) minmax(0, 1fr); gap: 12px; }
+.floor2.focus { grid-template-columns: minmax(0, 720px); justify-content: center; }
+.gpm { container-type: inline-size; background: #0B0F15; border: 1px solid #1A202B; border-radius: 11px; padding: 10px 12px; }
+.gplv { display: grid; grid-template-columns: minmax(0, 1fr) minmax(64px, 92px) minmax(0, 1fr) minmax(64px, 92px); gap: 4px 8px; align-items: center; }
+.gplv .inp.sm { height: 26px; min-height: 26px; padding: 0 7px; text-align: right; font-size: 12px; }
+@container (max-width: 380px) { .gplv { grid-template-columns: minmax(0, 1fr) 110px; } }
+.gpplan { margin-top: 8px; width: 100%; height: auto; font-size: 12.5px; line-height: 1.45; border-left: 2px solid #2E4A86 !important; resize: vertical; min-height: 46px; }
+.szin { display: grid; grid-template-columns: 1.2fr 1fr 1fr 1fr; gap: 8px; }
+.szrow { display: grid; grid-template-columns: minmax(0, 1fr) 70px 96px; gap: 10px; align-items: center; padding: 8px 0; border-top: 1px solid #161B24; font-size: 12.5px; }
+.szrow .r { text-align: right; }
+.rbrow { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 10px; align-items: center; padding: 9px 0; font-size: 12.5px; }
+.opnow { display: flex; flex-direction: column; gap: 10px; padding: 10px 0; color: var(--text2); }
+.opnow:hover { color: var(--text2); }
+.opgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12.5px; }
+.edge { display: flex; gap: 10px; padding: 9px 0; font-size: 12.5px; line-height: 1.45; }
+.eic { width: 26px; height: 26px; border-radius: 8px; flex: 0 0 26px; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.eic.b { background: #16233D; color: #9DB8FF; } .eic.a { background: #2A2312; color: var(--amber); } .eic.r { background: #2A1418; color: #F29AA2; } .eic.g { background: #10261C; color: #5FD9A3; }
+@media (max-width: 1279px) {
+  .floor2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .floor2 > .colstack:last-child { grid-column: 1 / -1; }
+  .fb-cell { padding-left: 0; border-left: 0; }
+  .fb-quotes { margin-left: 0; max-width: none; }
+}
+@media (max-width: 760px) {
+  .floor2, .floor2.focus { grid-template-columns: minmax(0, 1fr); }
+  .fb-win, .fb-cell { width: 100%; max-width: none; }
+  .szin { grid-template-columns: 1fr 1fr; }
+  .floor-tools { flex-wrap: wrap; }
+}
