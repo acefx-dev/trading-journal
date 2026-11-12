@@ -373,21 +373,37 @@ function ProfitSplit({ payouts }) {
   </section>`;
 }
 
-// ------------------------------------------------------------------ economic calendar (Myfxbook widget)
+// ------------------------------------------------------------------ economic calendar (TradingView or Myfxbook widget)
 
+// TradingView shows event times in the viewer's own time zone (Brisbane on your devices).
+// Myfxbook always starts at GMT; its time zone menu is remembered per browser.
+const CAL_COUNTRIES = 'us,eu,gb,jp,au,nz,ca,ch';
+const TV_CAL = (dark) => 'https://www.tradingview-widget.com/embed-widget/events/?locale=en#' + encodeURIComponent(JSON.stringify({
+  colorTheme: dark ? 'dark' : 'light', isTransparent: true, width: '100%', height: '100%', importanceFilter: '1', countryFilter: CAL_COUNTRIES,
+}));
 const MYFX = 'https://widget.mfbcdn.net/widget/calendar.html?lang=en&impacts=3&symbols=AUD,CAD,CHF,EUR,GBP,JPY,NZD,USD';
 
 function EconCalendar() {
-  const [dark, setDark] = useState(() => { try { return localStorage.getItem('tj.calDark') !== '0'; } catch { return true; } });
-  const flip = () => { const v = !dark; setDark(v); try { localStorage.setItem('tj.calDark', v ? '1' : '0'); } catch { /* ignore */ } };
+  const get = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+  const put = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
+  const [src, setSrc] = useState(() => get('tj.calSrc', 'tv'));
+  const [dark, setDark] = useState(() => get('tj.calDark', '1') !== '0');
+  const pick = (v) => { setSrc(v); put('tj.calSrc', v); };
+  const flip = () => { const v = !dark; setDark(v); put('tj.calDark', v ? '1' : '0'); };
+  const tv = src !== 'mfb';
   return html`<section class="panel" style="flex:1;min-height:190px">
-    <div class="ph"><div><h2>Economic calendar</h2><div class="sub" style="margin-top:2px">High impact · 8 currencies</div></div>
-      <div class="hstack" style="gap:6px"><button type="button" class="btn sm ghost" onClick=${flip} title="Switch the widget's colours">${dark ? 'Light' : 'Dark'}</button>
-        <a href="https://www.myfxbook.com/forex-economic-calendar" target="_blank" rel="noopener" style="font-size:12px">Open</a></div></div>
-    <div style="flex:1;min-height:0;border-top:1px solid #1B212C;overflow:hidden;background:${dark ? '#10141B' : '#fff'}">
-      <iframe src=${MYFX} title="Economic calendar by Myfxbook" loading="lazy" style=${`width:100%;height:100%;min-height:130px;border:0;display:block;${dark ? 'filter:invert(.9) hue-rotate(180deg)' : ''}`}></iframe></div>
+    <div class="ph"><div><h2>Economic calendar</h2><div class="sub" style="margin-top:2px">High impact${tv ? ' · your time zone' : ' · set GMT +10 once'}</div></div>
+      <div class="hstack" style="gap:6px;flex-wrap:nowrap">
+        <div class="seg2" role="group" aria-label="Calendar source">
+          <button type="button" class=${tv ? 'on' : ''} aria-pressed=${tv} onClick=${() => pick('tv')} title="TradingView: times in your own time zone">TV</button>
+          <button type="button" class=${!tv ? 'on' : ''} aria-pressed=${!tv} onClick=${() => pick('mfb')} title="Myfxbook: choose (GMT +10:00) in its time zone menu once">MFB</button></div>
+        <button type="button" class="btn sm ghost" style="min-height:26px;padding:0 7px" onClick=${flip} title=${dark ? 'Light widget' : 'Dark widget'} aria-label=${dark ? 'Light widget' : 'Dark widget'}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"/></svg></button></div></div>
+    <div style=${`flex:1;min-height:0;border-top:1px solid #1B212C;overflow:hidden;background:${dark ? '#10141B' : '#fff'}`}>
+      ${tv ? html`<iframe key=${'tv' + dark} src=${TV_CAL(dark)} title="Economic calendar by TradingView" loading="lazy" style="width:100%;height:100%;min-height:130px;border:0;display:block"></iframe>`
+        : html`<iframe key="mfb" src=${MYFX} title="Economic calendar by Myfxbook" loading="lazy" style=${`width:100%;height:100%;min-height:130px;border:0;display:block;${dark ? 'filter:invert(.9) hue-rotate(180deg)' : ''}`}></iframe>`}</div>
     <div style="padding:7px 14px;border-top:1px solid #1B212C;font-size:11px;color:#7F8897;display:flex;justify-content:space-between;gap:8px">
-      <span>Times follow the widget's own time zone setting</span>
-      <span><a href="https://www.myfxbook.com/forex-economic-calendar?utm_source=widget13&utm_medium=link&utm_campaign=copyright" title="Economic Calendar" target="_blank" rel="noopener" style="color:#C3CAD6;font-weight:600">Economic Calendar</a> by Myfxbook.com</span></div>
+      <span>${tv ? 'Times shown in your device’s time zone' : 'Pick (GMT +10:00) in the widget’s time menu once per browser'}</span>
+      ${tv ? html`<span><a href="https://www.tradingview.com/economic-calendar/" target="_blank" rel="noopener" style="color:#C3CAD6;font-weight:600">Economic calendar</a> by TradingView</span>`
+        : html`<span><a href="https://www.myfxbook.com/forex-economic-calendar?utm_source=widget13&utm_medium=link&utm_campaign=copyright" title="Economic Calendar" target="_blank" rel="noopener" style="color:#C3CAD6;font-weight:600">Economic Calendar</a> by Myfxbook.com</span>`}</div>
   </section>`;
 }
