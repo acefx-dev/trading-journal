@@ -142,7 +142,8 @@ function IdeaPanel({ id, prev, next, reloadList }) {
     <div class="mstrip">
       <div class="kcell"><div class="cap">${i.accounts.length > 1 ? 'Combined P&L' : 'Net P&L'}</div><div class=${cls('num', sgn(i.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.net)}</div><div class="sub" title="Commission, swap and fees">${i.status === 'open' ? 'floating' : `after ${fmt.money(i.costs)} costs`}</div></div>
       <div class="kcell"><div class="cap">Result</div><div class=${cls('num', sgn(leadAcc.r))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(leadAcc.r)}</div><div class="sub">${i.lead_name}</div></div>
-      <div class="kcell"><div class="cap" title=${pth && pth.peak ? 'Highest combined risk you held (stop moves counted)' : 'Sum of each position\'s first stop'}>${pth && pth.peak ? 'Risk (peak held)' : 'Initial risk'}</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div><div class="sub">${leadAcc.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : 'lead account'}</div></div>
+      <div class="kcell"><div class="cap" title=${pth && pth.peak ? 'Highest combined risk you held (stop moves counted)' : 'Sum of each position\'s first stop'}>${pth && pth.peak ? 'Risk (peak held)' : 'Initial risk'}</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div>
+        ${(() => { const nb = openRiskNow(d); const v = nb && nb.get(i.account_id); return nb && nb.has(i.account_id) ? html`<div class="sub">now ${v === 0 ? html`<span class="pos">$0 (stop at entry)</span>` : v == null ? 'unknown' : fmt.plain(v)}</div>` : ''; })()}<div class="sub">${leadAcc.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : 'lead account'}</div></div>
       ${pth && pth.mae_r != null && html`<div class="kcell"><div class="cap" title="Worst point of the combined floating P&L while the trade was open">Drawdown</div>
         <div class="num neg" style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(Math.min(0, pth.mae_r))}</div>
         <div class="sub" title="Best point during the trade">best <span class=${sgn(pth.mfe_r)}>${fmt.r(pth.mfe_r)}</span></div></div>`}
@@ -152,7 +153,7 @@ function IdeaPanel({ id, prev, next, reloadList }) {
     <div class="scrolly tabbody" style="padding:14px 16px 16px">
       ${leadAcc.risk == null && i.status === 'closed' && html`<div class="warn" style="margin-bottom:12px">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
       ${tab === 'review' && html`<${Review} d=${d} reload=${reload}/>`}
-      ${tab === 'pos' && html`<div class="stack" style="gap:18px">${risk && risk.checks.length > 0 && html`<${RiskChecks} risk=${risk}/>`}<${Positions} d=${d} reload=${reload}/><${Executions} i=${i}/><${Grouping} d=${d} reload=${reload}/></div>`}
+      ${tab === 'pos' && html`<div class="stack" style="gap:18px">${risk && risk.checks.length > 0 && html`<${RiskChecks} risk=${risk} nowBy=${openRiskNow(d)}/>`}<${Positions} d=${d} reload=${reload}/><${Executions} i=${i}/><${Grouping} d=${d} reload=${reload}/></div>`}
       ${tab === 'chart' && html`<${Chart} d=${d} reload=${reload}/>`}
       ${tab === 'path' && html`<${TradePath} d=${d}/>`}
       ${tab === 'log' && html`<${Audit} items=${d.audit}/>`}
@@ -163,12 +164,21 @@ const BIAS = { bull: 'Bullish', bear: 'Bearish', neutral: 'Neutral' };
 const LVL = { ok: ['g', 'Within limit'], tolerance: ['a', 'Within tolerance'], over: ['r', 'Over limit'] };
 
 /** Risk taken on each account against that account's limits (Accounts page). */
-function RiskChecks({ risk }) {
+const nowLabel = (v) => (v == null ? 'unknown' : v === 0 ? html`<span class="pos">$0 · stops at entry</span>` : fmt.plain(v));
+/** Current combined risk per account for an open idea, from the connector's latest stop changes. */
+function openRiskNow(d) {
+  if (d.idea.status !== 'open' || !d.tradePath || !d.tradePath.length) return null;
+  const m = new Map();
+  for (const a of d.tradePath) if (a.steps && a.steps.length) m.set(a.account_id, a.steps[a.steps.length - 1].total);
+  return m.size ? m : null;
+}
+
+function RiskChecks({ risk, nowBy }) {
   const pct = (v) => (v == null ? '' : ` (${fmt.num(v, 2)}%)`);
   return html`<section class="card flush">
     <div class="card-head"><div><h2 class="h2">Risk limits</h2><div class="sub" style="margin-top:4px">Up to ${fmt.num(risk.tolerancePct, 1)}% over a limit is allowed for slippage. Above that it counts as a violation.</div></div></div>
-    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th class="r">Risk on this idea</th><th class="r">Per-idea limit</th><th></th><th class="r">Risk that day</th><th class="r">Daily limit</th><th></th></tr></thead>
-    <tbody>${risk.checks.map((c) => html`<tr><td><b>${c.name}</b></td>
+    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th>${nowBy && html`<th class="r" title="Combined risk to the current stops">Open risk now</th>`}<th class="r">Risk on this idea</th><th class="r">Per-idea limit</th><th></th><th class="r">Risk that day</th><th class="r">Daily limit</th><th></th></tr></thead>
+    <tbody>${risk.checks.map((c) => html`<tr><td><b>${c.name}</b></td>${nowBy && html`<td class="num r">${nowBy.has(c.account_id) ? nowLabel(nowBy.get(c.account_id)) : '—'}</td>`}
       <td class="num r">${c.risk != null ? fmt.plain(c.risk) + pct(c.riskPct) : html`<span class="mut">no S/L</span>`}</td>
       <td class="num r">${c.limit != null ? fmt.plain(c.limit) + pct(c.limitPct) : html`<span class="mut">not set</span>`}</td>
       <td>${c.level && LVL[c.level] ? html`<span class=${'chip ' + LVL[c.level][0]}>${LVL[c.level][1]}</span>` : ''}</td>
@@ -246,6 +256,17 @@ function TradePath({ d }) {
   </div>`;
 }
 
+/** Stop now (or at the close) vs the first stop; flags break-even / locked profit. */
+function slCell(p) {
+  const cur = p.sl > 0 ? p.sl : null, first = p.initial_sl > 0 ? p.initial_sl : null;
+  if (!cur && !first) return html`<span class="chip r">none</span>`;
+  const long = p.direction === 'long';
+  const safe = cur && (long ? cur >= p.open_price - 1e-9 : cur <= p.open_price + 1e-9);
+  const tag = safe ? (Math.abs(cur - p.open_price) < Math.max(1e-9, p.open_price * 2e-5) ? 'break-even' : 'profit locked') : '';
+  return html`${cur ? fmt.num(cur, 5) : html`<span class="chip r">removed</span>`}${tag && html` <span class="chip g" style="height:18px;font-size:10.5px">${tag}</span>`}
+    ${first && cur !== first ? html`<div class="sub">first ${fmt.num(first, 5)}</div>` : ''}`;
+}
+
 function Positions({ d, reload }) {
   const i = d.idea;
   const byAcct = {};
@@ -254,7 +275,7 @@ function Positions({ d, reload }) {
   const act = async (url, msg) => { try { await api(url, { method: 'POST' }); toast(msg); reload(); } catch (e) { toast(e.message, true); } };
   return html`<section class="card flush">
     <div class="card-head"><div><h2 class="h2">Positions</h2><div class="sub" style="margin-top:4px">Original MT5 position IDs. Prices in each broker's own symbol.</div></div></div>
-    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th>Position</th><th>Opened</th><th class="r">Lots</th><th class="r">Entry</th><th class="r">Initial S/L</th><th class="r">Exit</th><th>Closed</th><th class="r">Gross</th><th class="r">Comm.</th><th class="r">Swap</th><th class="r">Fees</th><th class="r">Net P&L</th><th class="r">R</th><th><span class="sr">Actions</span></th></tr></thead>
+    <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th>Position</th><th>Opened</th><th class="r">Lots</th><th class="r">Entry</th><th class="r" title="Current stop (open) or last stop (closed); the first stop underneath">S/L</th><th class="r">Exit</th><th>Closed</th><th class="r">Gross</th><th class="r">Comm.</th><th class="r">Swap</th><th class="r">Fees</th><th class="r">Net P&L</th><th class="r">R</th><th><span class="sr">Actions</span></th></tr></thead>
     <tbody>${Object.values(byAcct).map((ps) => ps.map((p, k) => html`<tr>
       <td>${k === 0 ? html`<b>${p.account_name}</b>${p.account_id === i.account_id ? html` <span class="chip b">Lead</span>` : p.copy_link === 'twin' ? html` <span class="chip" title="Placed by hand, linked as the same trade">Same trade</span>` : ''}
         ${p.account_id !== i.account_id && !p.master_pos && html`<div><button class="btn sm" style="min-height:26px;margin-top:4px" title="This account's trade is a separate idea: move it out and review it on its own"
@@ -263,8 +284,8 @@ function Positions({ d, reload }) {
       <td class="num">${fmt.timeS(p.open_time)}<div class="sub">${p.symbol}</div></td>
       <td class="num r">${fmt.num(p.volume)}</td>
       <td class="num r">${fmt.num(p.open_price, 5)}</td>
-      <td class="num r">${p.initial_sl ? fmt.num(p.initial_sl, 5) : html`<span class="chip r">none</span>`}</td>
-      <td class="num r">${p.close_price != null ? fmt.num(p.close_price, 5) : '—'}</td>
+      <td class="num r">${slCell(p)}</td>
+      <td class="num r">${p.close_price != null ? html`${fmt.num(p.close_price, 5)}${p.status === 'open' && p.closed_volume > 0 ? html`<div class="sub" title="Average price of the part already closed">${fmt.num(p.closed_volume)} lots closed</div>` : ''}` : '—'}</td>
       <td class="num">${p.status === 'open' ? html`<span class="chip b">open</span>` : fmt.timeS(p.close_time)}</td>
       <td class="r"><${Money} v=${(p.profit || 0) + (p.status === 'open' ? (p.floating || 0) : 0)}/></td>
       <td class=${cls('num r', p.commission ? sgn(p.commission) : 'mut')}>${fmt.money(p.commission || 0)}</td>
