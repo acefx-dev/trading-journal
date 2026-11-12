@@ -1011,6 +1011,40 @@ on('GET', '/fx', async ({ db }) => {
   return { AUD: null, NZD: null, error: 'Live rate unavailable. Enter a rate.' };
 });
 
+/**
+ * Upcoming high-impact economic events (Forex Factory's public weekly feed, cached for an hour; unofficial,
+ * so the dashboard falls back to the calendar widget when it can't be read).
+ */
+export function parseFfEvents(list, ccys, now = Date.now()) {
+  return (Array.isArray(list) ? list : [])
+    .filter((e) => e && e.impact === 'High' && ccys.includes(String(e.country || '').toUpperCase()))
+    .map((e) => ({ t: Date.parse(e.date), ccy: String(e.country).toUpperCase(), title: String(e.title || '').slice(0, 80), forecast: e.forecast || '', previous: e.previous || '' }))
+    .filter((e) => isFinite(e.t) && e.t >= now - 30 * 60000)
+    .sort((a, b) => a.t - b.t);
+}
+
+on('GET', '/events', async ({ db, q }) => {
+  const set = await getSettings(db);
+  const ccys = String(set.raw.calendar_ccys || 'USD,JPY,EUR,GBP,AUD,NZD,CAD,CHF').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean);
+  const n = Math.min(Number(q.n) || 5, 30);
+  const row = await first(db, "SELECT value FROM settings WHERE key = 'ff_cache'");
+  let cache = null;
+  try { cache = row ? JSON.parse(row.value) : null; } catch { cache = null; }
+  if (!cache || Date.now() - cache.fetched > 3600000) {
+    try {
+      const r = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json', { headers: { Accept: 'application/json', 'User-Agent': 'trade-journal/1.8' } });
+      if (r.ok) {
+        const list = await r.json();
+        const high = (Array.isArray(list) ? list : []).filter((e) => e && e.impact === 'High');
+        cache = { fetched: Date.now(), items: high };
+        await run(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'ff_cache', JSON.stringify(cache));
+      }
+    } catch { /* keep the old copy */ }
+  }
+  if (!cache) return { items: [], error: 'Calendar feed unavailable', source: 'Forex Factory' };
+  return { items: parseFfEvents(cache.items, ccys).slice(0, n), fetched: cache.fetched, stale: Date.now() - cache.fetched > 3600000, source: 'Forex Factory' };
+});
+
 on('GET', '/payouts', async ({ db, sample }) => {
   const accts = await all(db, "SELECT * FROM accounts WHERE is_sample = ? AND status = 'active' ORDER BY id", sample);
   return { items: await payoutState(db, accts) };

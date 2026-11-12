@@ -289,3 +289,18 @@ test('episodes combine into the lowest and highest combined P&L', () => {
   const c = combineEpisodes([{ mae: -50, mae_t: 5, mfe: 120, mfe_t: 9, end_t: 10 }, { mae: -80, mae_t: 15, mfe: 60, mfe_t: 12, end_t: null, partial: 1 }]);
   assert.deepEqual(c, { mae: -80, mae_t: 15, mfe: 120, mfe_t: 9, partial: true, open: true });
 });
+
+test('economic events: high impact, chosen currencies, upcoming only, in time order', async () => {
+  const { parseFfEvents } = await import('../src/api.js');
+  const now = Date.parse('2026-11-12T02:00:00Z');
+  const list = [
+    { title: 'CPI y/y', country: 'USD', date: '2026-11-12T08:30:00-05:00', impact: 'High', forecast: '3.0%', previous: '2.9%' },
+    { title: 'GDP q/q', country: 'JPY', date: '2026-11-12T18:50:00-05:00', impact: 'High' },
+    { title: 'Old', country: 'USD', date: '2026-11-10T08:30:00-05:00', impact: 'High' },
+    { title: 'Low one', country: 'USD', date: '2026-11-12T09:00:00-05:00', impact: 'Low' },
+    { title: 'CNY thing', country: 'CNY', date: '2026-11-12T09:00:00-05:00', impact: 'High' },
+  ];
+  const r = parseFfEvents(list, ['USD', 'JPY'], now);
+  assert.deepEqual(r.map((e) => e.title), ['CPI y/y', 'GDP q/q']);
+  assert.equal(r[0].t, Date.parse('2026-11-12T13:30:00Z'));
+});

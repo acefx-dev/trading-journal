@@ -7,14 +7,15 @@ import { Accounts } from './pages/accounts.js';
 import { Analytics } from './pages/analytics.js';
 import { Settings } from './pages/settings.js';
 import { Review } from './pages/review.js';
+import { Floor } from './pages/floor.js';
 
 const NAV = [
-  ['#/', 'Dashboard', 'dash'], ['#/ideas', 'Trade ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'],
+  ['#/', 'Dashboard', 'dash'], ['#/floor', 'Trading Floor', 'floor'], ['#/ideas', 'Trade ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'],
   ['#/strategies', 'Strategies', 'strat'], ['#/analytics', 'Analytics', 'ana'], ['#/review', 'Review', 'review'], ['#/accounts', 'Accounts & sync', 'acct'],
 ];
 // pages that fit one screen on a large desktop (their panels scroll inside)
-const FIT = ['/', '/ideas', '/calendar', '/strategies', '/accounts'];
-const TABS = [['#/', 'Home', 'dash'], ['#/ideas', 'Ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'], ['#/strategies', 'Checklists', 'strat'], ['#/analytics', 'Stats', 'ana']];
+const FIT = ['/', '/floor', '/ideas', '/calendar', '/strategies', '/accounts'];
+const TABS = [['#/', 'Home', 'dash'], ['#/floor', 'Floor', 'floor'], ['#/ideas', 'Ideas', 'ideas'], ['#/calendar', 'Calendar', 'cal'], ['#/analytics', 'Stats', 'ana']];
 
 function useRoute() {
   const [r, setR] = useState(location.hash || '#/');
@@ -42,6 +43,7 @@ function App() {
   else if (seg[0] === 'analytics') page = html`<${Analytics}/>`;
   else if (seg[0] === 'settings') page = html`<${Settings}/>`;
   else if (seg[0] === 'review') page = html`<${Review}/>`;
+  else if (seg[0] === 'floor') page = html`<${Floor}/>`;
   else page = html`<div class="empty">Page not found. <a href="#/">Go to the dashboard</a></div>`;
 
   const active = (href) => (href === '#/' ? path === '/' : path.startsWith(href.slice(1)));

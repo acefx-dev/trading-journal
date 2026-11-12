@@ -1,4 +1,18 @@
-# Trade Journal — v1.7 (connector 1.02)
+# Trade Journal — v1.8 (connector 1.02)
+
+## v1.8: calmer dashboard and the Trading Floor
+
+- **Dashboard:**
+  - One status bar: prep steps left (or "Ready to trade"), the risk used today on the account closest to its daily limit, today's bias, and which sessions are open now on a 24-hour strip.
+  - Three numbers: this month, win rate and expectancy over 30 days.
+  - An equity chart for the month: all accounts in dollars, or pick one account (in %).
+  - Recent ideas, with Review links where a review is waiting.
+  - A **Today** panel with prep progress, the sentiment buttons and the next three high-impact events.
+  - Compact accounts, ordered by the limit closest to being hit.
+- **Trading Floor** (new page, in the menu and the phone tab bar) holds the session tools in one place: full daily prep with sentiment and Copy prompt, the economic calendar (TradingView or Myfxbook), market hours with the draggable line, the week's remaining high-impact events, and the profit split.
+- **Up next events** come from Forex Factory's public weekly feed (`/api/events`). The journal's server fetches it at most once an hour and keeps a copy. The feed is unofficial: if it stops working, the panels say so and the calendar widget still works.
+- **Customise** still works. The Trading Floor panels can also be shown on the dashboard (hidden by default). Layouts saved in v1.7 are reset once to the new default.
+
 
 ## v1.7: customisable dashboard
 

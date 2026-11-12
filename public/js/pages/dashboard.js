@@ -1,4 +1,4 @@
-import { html, useState, useEffect, useStore, useData, api, scopeQs, fmt, sgn, cls, Money, R, Dir, Bar, Loading, LineChart, PageHead, toast, store, setStore, reloadBoot, kindLabel, roleLabel, Icon } from '../lib.js';
+import { html, useState, useEffect, useRef, useStore, useData, api, scopeQs, fmt, sgn, cls, Money, R, Dir, Bar, Loading, LineChart, PageHead, toast, store, setStore, reloadBoot, kindLabel, roleLabel, Icon } from '../lib.js';
 import { sessionsInBrisbane, openSessions, SESSIONS, tzOffsetMs } from '../sessions.js';
 import { PANELS, SIZES, DEFAULTS, normalise, useScreen, movePanel, nudge, setSize, setHidden, setColumns, setWidth } from '../dashlayout.js';
 
@@ -20,7 +20,7 @@ export function Dashboard() {
   const s = useStore();
   const st = useData(() => api('/dashboard?' + scopeQs()), [s.acct, s.firm]);
   const [edit, setEdit] = useState(false);
-  const sub = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()) + ' AEST';
+  const sub = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', weekday: 'long', day: 'numeric', month: 'long' }).format(new Date()) + ' · Brisbane';
   return html`<${PageHead} title="Dashboard" sub=${sub}>${st.data && html`<${AlertPill} accounts=${st.data.accounts}/>`}
       <button type="button" class=${cls('btn sm', edit && 'pri')} onClick=${() => setEdit(!edit)} aria-pressed=${edit} title="Move, resize and hide panels">${edit ? 'Done' : 'Customise'}</button><//>
     <${SampleEmpty}/>
@@ -30,7 +30,7 @@ export function Dashboard() {
 function Body({ d, reload, edit, setEdit }) {
   const s = useStore();
   const { bp, fit } = useScreen();
-  const all = (() => { try { return JSON.parse(s.boot.settings.dash_layout || '{}'); } catch { return {}; } })();
+  const all = (() => { try { const v = JSON.parse(s.boot.settings.dash_layout || '{}'); return v && v.v === 2 ? v : { v: 2 }; } catch { return { v: 2 }; } })();
   const [layout, setLayoutState] = useState(() => normalise(all[bp], bp));
   useEffect(() => { setLayoutState(normalise(all[bp], bp)); }, [bp, s.boot.settings.dash_layout]);
   const save = async (l) => {
@@ -40,51 +40,33 @@ function Body({ d, reload, edit, setEdit }) {
     catch (e) { toast(e.message, true); }
   };
 
-  const combined = d.accounts.length > 1;
-  const showToday = d.lastDay === d.today;
-  const ls = d.lastDaySummary;
-  const s30 = d.stats30;
-  const toReview = d.recent.filter((i) => !i.reviewed).length;
+  const s30 = d.stats30, ms = d.monthSummary;
   const ideas = [...d.open, ...d.recent];
+  const events = useData(() => api('/events?n=4').catch(() => ({ items: [] })), []);
   const panels = {
-    chart: () => html`<section class="panel" style="min-height:240px">
-        <div class="ph"><h2>Return by account · this month</h2>
-          <div class="hstack" style="gap:12px;font-size:11.5px;color:var(--text2)">${d.accounts.slice(0, 5).map((a, i) => html`<span class="hstack" style="gap:5px">
-            <i style=${`width:14px;height:0;border-top:2px ${DASHES[i % 5] ? 'dashed' : 'solid'} ${COLORS[i % 5]};display:inline-block`}></i>${a.name}
-            <b class=${cls('num', sgn(a.monthPct))}>${fmt.pct(a.monthPct)}</b></span>`)}</div></div>
-        <div class="pb" style="flex:1;min-height:0;display:flex;align-items:center">
-          <${LineChart} height=${230} label="Return by account this month" yFmt=${(v) => (v > 0 ? '+' : '') + v.toFixed(1) + '%'}
-            series=${d.accounts.map((a, i) => ({ name: a.name, color: COLORS[i % 5], dash: DASHES[i % 5], points: [{ x: firstOfMonth(), y: 0 }, ...a.curve.map((p) => ({ x: p.t, y: p.pct }))] }))}
-            xLabels=${monthLabels()}/></div>
-      </section>`,
-    ideas: () => html`<section class="panel" style="min-height:200px">
-        <div class="ph"><h2>Recent trading ideas</h2><div class="hstack" style="gap:10px"><span class="sub">${d.open.length} open · ${toReview} to review</span><a href="#/ideas" style="font-size:12px">All ideas</a></div></div>
-        <div class="scrolly" style="padding:0 6px 6px;overflow-x:auto">${ideas.length ? html`<${IdeaTable} ideas=${ideas} compact/>` : html`<div class="empty">No trades yet. They appear here as soon as the MT5 connector sends them.</div>`}</div>
-      </section>`,
+    chart: () => html`<${EquityPanel} accounts=${d.accounts}/>`,
+    ideas: () => html`<${RecentIdeas} ideas=${ideas} open=${d.open.length}/>`,
+    today: () => html`<${TodayPanel} d=${d} reload=${reload} events=${events.data}/>`,
+    accounts: () => html`<${AccountsList} accounts=${d.accounts}/>`,
     calendar: () => html`<${EconCalendar}/>`,
     hours: () => html`<${Sessions}/>`,
     split: () => html`<${ProfitSplit} payouts=${d.payouts}/>`,
     prep: () => html`<${Prep} prep=${d.prep} reload=${reload}/>`,
-    accounts: () => html`<${AccountsPanel} accounts=${d.accounts}/>`,
   };
   const hidden = new Set(layout.hidden);
   const showKpis = !hidden.has('kpis');
   return html`
   ${edit && html`<${EditBar} layout=${layout} bp=${bp} save=${save} done=${() => setEdit(false)}/>`}
+  <${StatusBar} d=${d} events=${events.data}/>
   ${(showKpis || edit) && html`<div class=${cls(edit && 'dedit-k', !showKpis && 'dhidden')}>${edit && html`<div class="dtools"><b>Key figures</b><button type="button" class="btn sm" onClick=${() => save(setHidden(layout, 'kpis', showKpis))}>${showKpis ? 'Hide' : 'Show'}</button></div>`}
-  ${showKpis && html`<section class="kstrip" aria-label="Key figures">
-    <${Cell} label=${showToday ? 'Today' : d.lastDay ? 'Last session · ' + fmt.date(Date.parse(d.lastDay + 'T12:00:00+10:00')).split(' ')[0].replace(',', '') : 'Last session'}
-      value=${fmt.money(d.lastDayNet)} tone=${sgn(d.lastDayNet)}
-      sub=${ls ? `${ls.wins}W ${ls.losses}L${combined ? ' · R-basis ' + fmt.money(d.lastDayBasis) : ''}` : 'No closed trades yet'}/>
-    <${Cell} label="This month" value=${fmt.money(d.monthNet)} tone=${sgn(d.monthNet)} sub=${`${d.monthSummary.count} ideas${combined ? ' · R-basis ' + fmt.money(d.monthBasis, 0) : ''}`}/>
-    <${Cell} label="Win rate · 30d" value=${fmt.rate(s30.winRate)} sub=${`${s30.wins} of ${s30.wins + s30.losses} ideas`}>
-      <div class="bar" style="margin-top:6px"><i style=${`width:${Math.round((s30.winRate || 0) * 100)}%`}></i></div><//>
-    <${Cell} label="Profit factor · 30d" value=${fmt.pf(s30)} sub=${`${fmt.plain(s30.grossWin, 0)} won · ${fmt.plain(s30.grossLoss, 0)} lost`}/>
-    <${Cell} label="Expectancy · 30d" value=${fmt.r(s30.expectancyR)} tone=${sgn(s30.expectancyR)} sub=${`≈ ${fmt.money(s30.expectancy)} per idea`}/>
-    <${Cell} label="Max drawdown" value=${d.drawdown ? fmt.pct(-d.drawdown.maxDdPct) : '—'} tone=${d.drawdown && d.drawdown.maxDdPct ? 'neg' : ''}
-      sub=${d.drawdown ? `${fmt.money(-d.drawdown.maxDd)} · ${d.drawdown.account}` : '—'}/>
+  ${showKpis && html`<section class="kpi3" aria-label="Key figures">
+    <div class="card kpi"><div class="cap">This month</div><div class=${cls('kv num', sgn(d.monthNet))}>${fmt.money(d.monthNet, 0)}</div>
+      <div class="sub">${ms.count} idea${ms.count === 1 ? '' : 's'}${ms.rCount ? ` · ${(ms.expectancyR * ms.rCount >= 0 ? '+' : '') + (ms.expectancyR * ms.rCount).toFixed(1)}R` : ''}</div></div>
+    <div class="card kpi"><div class="cap">Win rate · 30 days</div><div class="kv num">${s30.winRate == null ? '—' : Math.round(s30.winRate * 100) + '%'}</div>
+      <div class="sub">${s30.wins} of ${s30.count} ideas</div></div>
+    <div class="card kpi"><div class="cap">Expectancy · 30 days</div><div class=${cls('kv num', sgn(s30.expectancyR))}>${s30.expectancyR == null ? '—' : fmt.r(s30.expectancyR)}</div>
+      <div class="sub">${s30.expectancy == null ? 'no closed ideas yet' : `about ${fmt.money(s30.expectancy, 0)} per idea`}</div></div>
   </section>`}</div>`}
-
   <${Grid} layout=${layout} panels=${panels} fit=${fit} edit=${edit} save=${save}/>`;
 }
 
@@ -139,6 +121,166 @@ function EditBar({ layout, bp, save, done }) {
       <button type="button" class="btn sm" onClick=${() => { if (confirm('Reset the ' + name + ' layout to the default?')) save(JSON.parse(JSON.stringify(DEFAULTS[bp]))); }}>Reset</button>
       <button type="button" class="btn sm pri" onClick=${done}>Done</button></div>
   </div>`;
+}
+
+// ------------------------------------------------------------------ v1.8 dashboard pieces
+
+const bneHM = (t) => new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', hour: '2-digit', minute: '2-digit', hour12: false }).format(t);
+const inTxt = (ms) => (ms <= 0 ? 'now' : ms < 3600000 ? `in ${Math.round(ms / 60000)} min` : ms < 86400000 ? `in ${Math.floor(ms / 3600000)}h ${String(Math.round(ms % 3600000 / 60000)).padStart(2, '0')}` : 'tomorrow+');
+const dayTag = (t) => { const d = fmt.date(t), today = fmt.date(Date.now()); return d === today ? '' : new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', weekday: 'short' }).format(t) + ' '; };
+
+/** Which sessions are open now, a 24-hour strip with a now marker, and the next open (Brisbane time). */
+function SessionCell() {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
+  const openS = openSessions(now), open = openS.map((x) => x.name);
+  let next = null;
+  for (let k = 60 - new Date(now).getMinutes(); k <= 72 * 60 && !next; k += 60) { const o = openSessions(now + k * 60000).find((x) => !open.includes(x.name)); if (o) next = { name: o.name, k }; }
+  const rows = sessionsInBrisbane(now);
+  const dayStart = Date.parse(new Intl.DateTimeFormat('en-CA', { timeZone: 'Australia/Brisbane' }).format(now) + 'T00:00:00+10:00');
+  const m = (now - dayStart) / 60000;
+  const toMin = (hm) => +hm.slice(0, 2) * 60 + +hm.slice(3);
+  const P = (v) => (v / 1440 * 100).toFixed(2) + '%';
+  const closes = open.length ? rows.find((r) => r.name === open[open.length - 1]) : null;
+  return html`<a href="#/floor" class="sb-cell sb-sess" title="Market hours in Brisbane time · open the Trading Floor">
+    <div class="spread" style="flex-wrap:nowrap;gap:10px"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${open.length
+      ? html`${open.map((n, k) => html`${k ? ' + ' : ''}<b style=${`color:${SESS_COLORS[n]}`}>${n}</b>`)} <span class="sub">open${closes ? ' · closes ' + closes.to : ''}</span>`
+      : html`<span class="sub">Markets closed</span>`}</span><span class="num sub" style="color:var(--text2)">${bneHM(now)}</span></div>
+    <span class="sess-strip" aria-hidden="true">${rows.map((r) => { const a = toMin(r.from), b = toMin(r.to);
+      return (a < b ? [[a, b]] : [[a, 1440], [0, b]]).map(([x, y]) => html`<i style=${`left:${P(x)};width:${P(y - x)};background:${SESS_COLORS[r.name]};opacity:${open.includes(r.name) ? 0.9 : 0.25}`}></i>`); })}
+      <em style=${`left:${P(m)}`}></em></span>
+    <div class="sub">${next ? `${next.name} opens in ${dur(next.k)}` : ''}</div>
+  </a>`;
+}
+
+/** One line: can I trade (prep), how much risk is used, today's bias, the next big event. */
+function StatusBar({ d, events }) {
+  const items = d.prep.items, done = items.filter((i) => i.checked).length;
+  const sent = d.prep.sentiment && d.prep.sentiment.overall;
+  const left = items.length - done + (sent ? 0 : 1);
+  const withLimit = d.accounts.filter((a) => a.riskToday && a.riskToday.limit);
+  const worst = withLimit.sort((a, b) => b.riskToday.used / b.riskToday.limit - a.riskToday.used / a.riskToday.limit)[0];
+  const BIAS = { bull: ['▲ Bullish', 'var(--pos)'], bear: ['▼ Bearish', 'var(--neg)'], neutral: ['– Neutral', 'var(--text)'] };
+  return html`<section class="card statusbar" aria-label="Today at a glance">
+    <div class="sb-main"><span class=${cls('sb-ic', left ? 'warn' : 'ok')} aria-hidden="true"><span></span></span>
+      <div><div class="sb-t">${left ? `${left} prep step${left > 1 ? 's' : ''} left` : 'Ready to trade'}</div>
+        <div class="sub">${left ? 'Finish daily prep before your first trade' : 'Prep done and bias set for today'}</div></div></div>
+    <div class="sb-cell"><div class="cap">Risk today</div><div class="sb-v">${worst ? html`<span class=${cls('num', worst.riskToday.level === 'over' ? 'neg' : '')} style=${worst.riskToday.level === 'tolerance' ? 'color:var(--amber)' : ''}>${fmt.plain(worst.riskToday.used)}</span> <span class="sub">of ${fmt.plain(worst.riskToday.limit)}${withLimit.length > 1 ? ' · ' + worst.name : ''}</span>` : html`<span class="sub">set limits on Accounts</span>`}</div></div>
+    <div class="sb-cell"><div class="cap">Bias</div><div class="sb-v" style=${`font-weight:600;color:${sent ? BIAS[sent][1] : 'var(--mut)'}`}>${sent ? BIAS[sent][0] : 'Not set'}</div></div>
+    <${SessionCell}/>
+    <a href="#/floor" class=${cls('btn', left && 'pri')} style="margin-left:auto">${left ? 'Continue prep' : 'Trading floor'} <${Icon} name="arrow" size=${14}/></a>
+  </section>`;
+}
+
+/** Equity this month: all accounts in dollars, or one account in %. */
+function EquityPanel({ accounts }) {
+  const [sel, setSel] = useState('all');
+  const acc = accounts.find((a) => String(a.id) === sel);
+  const t0 = firstOfMonth();
+  let pts, yFmt, color = '#3DD68C';
+  if (acc) {
+    pts = [{ x: t0, y: 0 }, ...acc.curve.map((p) => ({ x: p.t, y: p.pct }))];
+    yFmt = (v) => (v > 0 ? '+' : '') + v.toFixed(1) + '%';
+  } else {
+    const ev = accounts.flatMap((a) => a.curve.map((p) => ({ t: p.t, id: a.id, usd: p.pct * (a.size || 0) / 100 }))).sort((x, y) => x.t - y.t);
+    const last = {};
+    pts = [{ x: t0, y: 0 }, ...ev.map((e) => { last[e.id] = e.usd; return { x: e.t, y: Object.values(last).reduce((s2, v) => s2 + v, 0) }; })];
+    yFmt = (v) => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString('en-US');
+  }
+  const endV = pts[pts.length - 1].y;
+  if (endV < 0) color = '#FF7A84';
+  const shortName = (n) => n.replace(/FundingPips/i, 'FP').replace(/The5ers|The5%ers/i, '5ers').replace(/\s*100K\s*/, ' ').replace(/\s+/g, ' ').trim();
+  return html`<section class="panel" style="min-height:230px">
+    <div class="ph"><div><h2>Equity · this month</h2><div class="sub" style="margin-top:2px">${acc ? 'Return on ' + acc.name : 'All accounts in this view, in dollars'} · <b class=${sgn(endV)}>${yFmt(endV)}</b></div></div>
+      ${accounts.length > 1 && html`<div class="seg2" role="group" aria-label="Account">${[['all', 'All'], ...accounts.slice(0, 5).map((a) => [String(a.id), shortName(a.name)])].map(([k, l]) => html`<button type="button" class=${sel === k ? 'on' : ''} aria-pressed=${sel === k} onClick=${() => setSel(k)}>${l}</button>`)}</div>`}</div>
+    <div class="pb" style="flex:1;min-height:0;display:flex;align-items:center;padding-top:0">
+      <${AreaChart} points=${pts} yFmt=${yFmt} color=${color} xLabels=${monthLabels()}/></div>
+  </section>`;
+}
+
+function AreaChart({ points, yFmt, color, xLabels }) {
+  const ref = useRef(null);
+  const [W, setW] = useState(640);
+  useEffect(() => {
+    if (!ref.current || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => setW(Math.max(260, Math.round(e.contentRect.width))));
+    ro.observe(ref.current); return () => ro.disconnect();
+  }, []);
+  const H = W < 480 ? 160 : (typeof innerHeight !== 'undefined' && innerHeight < 820 ? 165 : 200), L = 58, Rm = 10, T = 10, B = 24;
+  const t0 = firstOfMonth(), t1 = Math.max(Date.now(), ...points.map((p) => p.x));
+  const ys = points.map((p) => p.y);
+  let lo = Math.min(0, ...ys), hi = Math.max(0, ...ys);
+  const pad = (hi - lo || 1) * 0.12; lo -= pad; hi += pad;
+  const X = (t) => L + (t - t0) / (t1 - t0) * (W - L - Rm), Y = (v) => T + (hi - v) / (hi - lo) * (H - T - B);
+  const raw = (hi - lo) / 4, mag = Math.pow(10, Math.floor(Math.log10(raw))), step = [1, 2, 2.5, 5, 10].map((k) => k * mag).find((k) => k >= raw);
+  const ticks = []; for (let v = Math.ceil(lo / step) * step; v <= hi; v += step) ticks.push(v);
+  const line = points.map((p) => `${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ');
+  const last = points[points.length - 1];
+  return html`<div ref=${ref} style="width:100%;min-width:0">
+    <svg width=${W} height=${H} role="img" aria-label=${`Equity this month, now ${yFmt(last.y)}`} style="display:block">
+      <defs><linearGradient id="eqg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color=${color} stop-opacity=".22"/><stop offset="1" stop-color=${color} stop-opacity="0"/></linearGradient></defs>
+      ${ticks.map((v) => html`<line x1=${L} x2=${W - Rm} y1=${Y(v)} y2=${Y(v)} stroke=${Math.abs(v) < 1e-9 ? '#2A3140' : '#161B24'}/><text x=${L - 8} y=${Y(v) + 4} text-anchor="end" class="pc-ax">${yFmt(v)}</text>`)}
+      <polygon points=${`${X(points[0].x)},${Y(lo)} ${line} ${X(last.x)},${Y(lo)}`} fill="url(#eqg)"/>
+      <polyline points=${line} fill="none" stroke=${color} stroke-width="2" stroke-linejoin="round"/>
+      <circle cx=${X(last.x)} cy=${Y(last.y)} r="4" fill=${color} stroke="#0F131A" stroke-width="2"/>
+      ${(() => { const max = Math.max(2, Math.floor((W - L) / 80)), every = Math.ceil(xLabels.length / max);
+        const shown = xLabels.filter((_, k) => k % every === 0 || k === xLabels.length - 1).filter((l, k, a) => k === a.length - 1 || X(a[k + 1].x) - X(l.x) > 56);
+        return shown.map((l, k) => html`<text x=${X(l.x)} y=${H - 6} text-anchor=${k === 0 ? 'start' : k === shown.length - 1 ? 'end' : 'middle'} class="pc-ax">${l.label}</text>`); })()}
+    </svg></div>`;
+}
+
+function RecentIdeas({ ideas, open }) {
+  const toReview = ideas.filter((i) => i.status !== 'open' && !i.reviewed).length;
+  return html`<section class="panel" style="min-height:200px">
+    <div class="ph"><div><h2>Recent ideas</h2><div class="sub" style="margin-top:2px">${open} open · ${toReview} to review</div></div><a href="#/ideas" style="font-size:12.5px">All ideas</a></div>
+    <div class="scrolly rlist">${ideas.length ? ideas.slice(0, 12).map((i) => html`<a href=${'#/ideas/' + i.id} class="irow">
+        <span class="num sub">${dayTag(i.open_time) || 'Today '}${fmt.time(i.open_time)}</span>
+        <span class="hstack" style="gap:8px;flex-wrap:nowrap;min-width:0"><b style="color:var(--text)">${i.symbol}</b><${Dir} d=${i.direction}/><span class="sub ir-strat" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${i.strategy_name || ''}</span></span>
+        <span class="num sub r ir-held">${i.status === 'open' ? 'open' : fmt.dur(i.close_time - i.open_time).replace(' min', 'm').replace(' h ', 'h ')}</span>
+        <span class="r">${i.status === 'open' ? html`<span class="mut">—</span>` : html`<${R} v=${i.r}/>`}</span>
+        <span class="r ir-pl" style="font-weight:600">${html`<${Money} v=${i.status === 'open' ? i.floating : i.net}/>`}</span>
+        <span class="r" style="font-size:12px">${i.status === 'open' ? html`<span class="sub"><span class="live" style="--c:#9DB8FF"></span> Open</span>` : i.reviewed ? html`<span class="sub">✓ Reviewed</span>` : html`<span style="color:#9DB8FF">Review →</span>`}</span>
+      </a>`) : html`<div class="empty">No trades yet. They appear here as soon as the MT5 connector sends them.</div>`}</div>
+  </section>`;
+}
+
+/** Today: prep progress, the bias, and the next high-impact events. The full tools live on the Trading Floor. */
+function TodayPanel({ d, reload, events }) {
+  const items = d.prep.items, done = items.filter((i) => i.checked).length;
+  const evs = events && events.items ? events.items.slice(0, 3) : null;
+  return html`<section class="panel">
+    <div class="ph"><h2>Today</h2><a href="#/floor" class="sub num" style="font-size:12px">${done} / ${items.length} prep →</a></div>
+    <div class="pb stack" style="gap:14px;padding-top:0">
+      <${Bar} pct=${items.length ? done / items.length * 100 : 0} color=${done >= items.length ? 'var(--pos)' : 'var(--amber)'}/>
+      <${SentimentBlock} prep=${d.prep} onSaved=${reload} compact/>
+      <div><div class="spread"><span class="cap">Up next · high impact</span><a href="#/floor" style="font-size:12px">Calendar</a></div>
+        ${evs == null ? html`<div class="sub" style="padding:8px 0">Loading…</div>` : evs.length ? evs.map((e) => html`<div class="evrow">
+          <span class="num" style="color:var(--text2)">${dayTag(e.t)}${bneHM(e.t)}</span><span class="ccy">${e.ccy}</span><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title=${e.forecast ? `Forecast ${e.forecast} · previous ${e.previous}` : ''}>${e.title}</span><span class="sub">${inTxt(e.t - Date.now())}</span></div>`)
+          : html`<div class="sub" style="padding:8px 0">${events.error ? 'Couldn’t load events. Open the calendar on the Trading Floor.' : 'No more high-impact events this week.'}</div>`}</div>
+    </div>
+  </section>`;
+}
+
+/** Compact accounts: balance, the limit closest to being hit, month P&L. */
+function AccountsList({ accounts }) {
+  const list = [...accounts].sort((a, b) => hotness(b) - hotness(a));
+  const hot = list.find((a) => hotness(a) >= 50);
+  return html`<section class="panel" style="min-height:180px">
+    <div class="ph"><h2>Accounts</h2><a href="#/accounts" style="font-size:12.5px">Manage</a></div>
+    <div class="scrolly" style="padding:0 16px 4px">${list.map((a, k) => {
+      const rules = a.prop && a.prop.rules ? a.prop.rules : [];
+      const near = rules.length ? rules.reduce((x, r) => (r.pct > x.pct ? r : x)) : null;
+      const tgt = a.targetProgress;
+      const barPct = tgt != null ? tgt : near ? near.pct : 0;
+      const barCol = tgt != null ? '#9DB8FF' : near ? LEVEL_COLOR[near.level] || 'var(--pos)' : 'var(--pos)';
+      return html`<div class="acrow" style=${k ? 'border-top:1px solid #161B24' : ''}>
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b style="font-weight:500">${a.name}</b> <span class="sub">· ${kindLabel(a.kind)}</span></span>
+        <span class="num r">${fmt.plain(a.balance)}</span>
+        <span title=${tgt != null ? `Profit target ${Math.round(tgt)}% reached` : near ? `${near.label || 'Limit'} ${Math.round(near.pct)}% used` : ''}><${Bar} pct=${Math.min(100, barPct)} color=${barCol}/></span>
+        <span class="sub r num"><${Money} v=${a.month}/> month</span></div>`; })}
+      ${!list.length && html`<div class="empty">No accounts in this view.</div>`}</div>
+    <div class="sub" style="padding:8px 16px 12px;border-top:1px solid #161B24">${hot ? html`<span style="color:var(--amber)">${hot.name}: a limit is ${Math.round(hotness(hot))}% used</span>` : 'All accounts well within their limits'}</div>
+  </section>`;
 }
 
 function Cell({ label, value, sub, tone, children }) {
@@ -274,7 +416,7 @@ const SENT = [['bear', 'Bear', '▼', 'r'], ['neutral', 'Neutral', '–', ''], [
 const SENT_STYLE = { bear: 'background:#3A1A1E;border-color:#6A2A31;color:#FF9AA2', neutral: 'background:#1A2030;border-color:#36405A;color:var(--text)', bull: 'background:#12301F;border-color:#1D5A38;color:#5BE3A0' };
 
 /** Step 1 of daily prep: overall sentiment, a bias per market, what you checked, and the Copy prompt button. */
-export function SentimentBlock({ prep, editable = true, onSaved }) {
+export function SentimentBlock({ prep, editable = true, onSaved, compact }) {
   const opts = prep.sentimentOptions || { markets: [], basis: [], prompt: '' };
   const init = prep.sentiment || { overall: null, markets: {}, basis: [] };
   const [v, setV] = useState({ overall: init.overall || null, markets: init.markets || {}, basis: init.basis || [] });
@@ -292,7 +434,7 @@ export function SentimentBlock({ prep, editable = true, onSaved }) {
     ${SENT.map(([k, l, ic]) => { const on = cur === k; return html`<button type="button" class="btn sm" disabled=${!editable} aria-pressed=${on} style=${`min-height:26px;padding:0 4px;justify-content:center;font-size:11.5px;${on ? SENT_STYLE[k] : 'color:var(--mut)'}`}
       onClick=${() => onPick(on ? null : k)}>${ic} ${l}</button>`; })}</div>`;
   return html`<div class="stack" style="gap:4px">
-    <div class="spread"><span class="cap" style="color:#C9D8FF">1 · Market sentiment</span>
+    <div class="spread"><span class="cap" style=${compact ? '' : 'color:#C9D8FF'}>${compact ? 'Market sentiment' : '1 · Market sentiment'}</span>
       ${opts.prompt ? html`<button type="button" class="btn sm ghost" style="min-height:22px;padding:0 6px;font-size:11.5px;color:#9DB8FF" onClick=${copy} title="Copy your sentiment prompt to paste into Claude"><${Icon} name="copy" size=${13}/>Copy prompt</button>`
         : html`<a href="#/strategies" style="font-size:11.5px" title="Save the prompt you use to check sentiment">Add your prompt</a>`}</div>
     ${row(opts.markets.length ? 'Overall' : null, v.overall, (k) => save({ ...v, overall: k }), 'Overall market sentiment')}
@@ -300,7 +442,7 @@ export function SentimentBlock({ prep, editable = true, onSaved }) {
   </div>`;
 }
 
-function Prep({ prep, reload }) {
+export function Prep({ prep, reload }) {
   const [local, setLocal] = useState({});
   const [overall, setOverall] = useState(prep.sentiment ? prep.sentiment.overall : null);
   const h = useData(() => api('/prep/history?days=14'), []);
@@ -335,7 +477,7 @@ const hhmm = (m) => String(Math.floor(((m % 1440) + 1440) % 1440 / 60)).padStart
 const short = (n) => (n === 'New York' ? 'NY' : n);
 const dur = (k) => (k < 60 ? k + ' min' : Math.floor(k / 60) + ' h' + (k % 60 ? ' ' + String(k % 60).padStart(2, '0') : ''));
 
-function Sessions() {
+export function Sessions() {
   const [now, setNow] = useState(Date.now());
   const [scrub, setScrub] = useState(null); // minutes after Brisbane midnight, or null = now
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 30000); return () => clearInterval(t); }, []);
@@ -387,7 +529,7 @@ function useFx() {
   return fx;
 }
 
-function ProfitSplit({ payouts }) {
+export function ProfitSplit({ payouts }) {
   const list = payouts || [];
   const fx = useFx();
   const first = list.find((p) => p.kind === 'funded') || list[0];
@@ -448,7 +590,7 @@ const TV_CAL = (dark) => 'https://www.tradingview-widget.com/embed-widget/events
 }));
 const MYFX = 'https://widget.mfbcdn.net/widget/calendar.html?lang=en&impacts=3&symbols=AUD,CAD,CHF,EUR,GBP,JPY,NZD,USD';
 
-function EconCalendar() {
+export function EconCalendar() {
   const get = (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
   const put = (k, v) => { try { localStorage.setItem(k, v); } catch { /* ignore */ } };
   const [src, setSrc] = useState(() => get('tj.calSrc', 'tv'));

@@ -7,22 +7,25 @@ import { useState, useEffect } from 'preact/hooks';
 
 export const PANELS = {
   kpis: 'Key figures',
-  chart: 'Return by account',
-  ideas: 'Recent trading ideas',
+  chart: 'Equity',
+  ideas: 'Recent ideas',
+  today: 'Today (prep, bias, up next)',
+  accounts: 'Accounts',
   calendar: 'Economic calendar',
   hours: 'Market hours',
   split: 'Profit split',
-  prep: 'Daily preparation',
-  accounts: 'Accounts',
+  prep: 'Daily preparation (full)',
 };
 const COLUMN_IDS = Object.keys(PANELS).filter((k) => k !== 'kpis');
 export const SIZES = [['auto', 'Fit'], ['s', 'S'], ['m', 'M'], ['l', 'L']];
 
 const P = (id, size) => ({ id, size });
+// the full calendar, market hours, profit split and prep live on the Trading Floor; they can be shown here too
+const EXTRAS = ['calendar', 'hours', 'split', 'prep'];
 export const DEFAULTS = {
-  desktop: { cols: [[P('chart', 'm'), P('ideas', 'l')], [P('calendar', 'l'), P('hours', 'auto'), P('split', 'auto')], [P('prep', 'auto'), P('accounts', 'l')]], widths: [1.3, 1, 1], hidden: [] },
-  tablet: { cols: [[P('prep', 'auto'), P('chart', 'auto'), P('ideas', 'm')], [P('accounts', 'auto'), P('calendar', 'l'), P('hours', 'auto'), P('split', 'auto')]], widths: [1, 1], hidden: [] },
-  phone: { cols: [[P('prep', 'auto'), P('accounts', 'auto'), P('chart', 'auto'), P('ideas', 'm'), P('calendar', 'l'), P('hours', 'auto'), P('split', 'auto')]], widths: [1], hidden: [] },
+  desktop: { cols: [[P('chart', 'auto'), P('ideas', 'l')], [P('today', 'auto'), P('accounts', 'l'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1.9, 1], hidden: [...EXTRAS] },
+  tablet: { cols: [[P('chart', 'auto'), P('ideas', 'm')], [P('today', 'auto'), P('accounts', 'auto'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1.5, 1], hidden: [...EXTRAS] },
+  phone: { cols: [[P('today', 'auto'), P('chart', 'auto'), P('ideas', 'm'), P('accounts', 'auto'), ...EXTRAS.map((x) => P(x, 'auto'))]], widths: [1], hidden: [...EXTRAS] },
 };
 
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -34,14 +37,16 @@ export function normalise(l, bp) {
   const seen = new Set();
   const cols = l.cols.slice(0, 4).map((c) => (Array.isArray(c) ? c : []).filter((p) => p && COLUMN_IDS.includes(p.id) && !seen.has(p.id) && seen.add(p.id))
     .map((p) => ({ id: p.id, size: SIZES.some(([k]) => k === p.size) ? p.size : 'auto' })));
+  const hiddenIn = Array.isArray(l.hidden) ? [...l.hidden] : [];
   for (const id of COLUMN_IDS) {
     if (seen.has(id)) continue;
+    if (def.hidden.includes(id)) hiddenIn.push(id);
     const fromDef = def.cols.flat().find((p) => p.id === id) || P(id, 'auto');
     const shortest = cols.reduce((a, c, k) => (c.length < cols[a].length ? k : a), 0);
     cols[shortest].push({ ...fromDef });
   }
   const widths = cols.map((_, k) => { const w = Number((l.widths || [])[k]); return w >= 0.5 && w <= 3 ? Math.round(w * 10) / 10 : 1; });
-  const hidden = (Array.isArray(l.hidden) ? l.hidden : []).filter((id) => id in PANELS);
+  const hidden = [...new Set(hiddenIn)].filter((id) => id in PANELS);
   return { cols, widths, hidden };
 }
 
