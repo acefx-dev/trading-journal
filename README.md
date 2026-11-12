@@ -1,4 +1,20 @@
-# Trade Journal — v1.6 (connector 1.02)
+# Trade Journal — v1.7 (connector 1.02)
+
+## v1.7: customisable dashboard
+
+- **Customise** (top of the dashboard) turns on edit mode.
+- **Move:** drag a panel by its bar, or use ↑ ↓ ← → (on a phone, use the arrows).
+- **Size:** **Fit** sizes a panel to its content; **S / M / L** set its height. On a one-screen desktop the sizes share the column's height; on a page that scrolls they are fixed heights.
+- **Hide / Show** any panel, including the key figures.
+- **Columns:** choose how many, and set each column's width with − / +.
+- **Reset** returns to the default layout.
+- Desktop (1280 px and wider), tablet and phone each keep their own layout. It's saved to your account, so it follows you across browsers. No migration is needed (the setting `dash_layout`).
+
+Also in this version:
+- Economic calendar: TradingView by default, with times in your device's time zone.
+- Ideas: the current stop is shown, with a break-even or "profit locked" tag. Open ideas show the open risk now.
+- The Trade path chart now plots entry → worst / best → exit over time.
+
 
 ## Upgrading to v1.6: trade path (connector 1.02)
 

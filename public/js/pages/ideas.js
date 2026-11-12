@@ -189,16 +189,97 @@ function RiskChecks({ risk, nowBy }) {
   </section>`;
 }
 
-/** Put marker labels above or below the line so they don't overlap; drop any that still would. */
-function placeLabels(ms) {
-  const GAP = 18, last = { true: -99, false: -99 };
-  return [...ms].sort((a, b) => a.p - b.p).map((m) => {
-    let top = m.top;
-    if (m.p - last[top] < GAP) top = !top;
-    const show = m.p - last[top] >= GAP;
-    if (show) last[top] = m.p;
-    return { ...m, top, show };
+const hm = (t) => new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', hour: '2-digit', minute: '2-digit', hour12: false }).format(t);
+
+/**
+ * The trade's key points over time, in R of the risk held: entry → worst / best (in the order they happened) → exit (or now).
+ * Only those points are recorded, so the line between them is a straight join, not every tick.
+ */
+function PathChart({ i, lead, res }) {
+  const ref = useRef(null);
+  const [W, setW] = useState(640);
+  useEffect(() => {
+    if (!ref.current || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(([e]) => setW(Math.max(280, Math.round(e.contentRect.width))));
+    ro.observe(ref.current);
+    return () => ro.disconnect();
+  }, []);
+  const open = i.status === 'open';
+  const t0 = i.open_time, t1 = Math.max(i.close_time || Date.now(), t0 + 60000);
+  const endR = res ?? 0;
+  const pts = [{ t: t0, r: 0, k: 'entry' }];
+  if (lead.mae_r != null && lead.mae_t) pts.push({ t: lead.mae_t, r: Math.min(0, lead.mae_r), k: 'worst' });
+  if (lead.mfe_r != null && lead.mfe_t) pts.push({ t: lead.mfe_t, r: lead.mfe_r, k: 'best' });
+  pts.sort((a, b) => a.t - b.t);
+  pts.push({ t: t1, r: endR, k: open ? 'now' : 'exit' });
+  for (const p of pts) p.t = Math.min(Math.max(p.t, t0), t1);
+  // a worst/best point that is really the exit (same level, at the end) is shown once, on the exit
+  const last = pts[pts.length - 1];
+  for (let k = pts.length - 2; k > 0; k--) {
+    const p = pts[k];
+    if (Math.abs(p.r - last.r) < 0.08 && (t1 - p.t) < (t1 - t0) * 0.25) { last.also = p.k; pts.splice(k, 1); }
+  }
+
+  const H = W < 480 ? 200 : 230, L = 52, Rp = 18, T = 26, B = 30;
+  const lo = Math.min(-1, ...pts.map((p) => p.r)) - 0.4, hi = Math.max(0.5, ...pts.map((p) => p.r)) + 0.35;
+  const X = (t) => L + (t - t0) / (t1 - t0) * (W - L - Rp);
+  const Y = (r) => T + (hi - r) / (hi - lo) * (H - T - B);
+  const span = hi - lo, step = span > 6 ? 2 : span > 3 ? 1 : 0.5;
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(Math.round(v * 100) / 100);
+  const line = pts.map((p) => `${X(p.t).toFixed(1)},${Y(p.r).toFixed(1)}`).join(' ');
+  const area = `${X(t0).toFixed(1)},${Y(0).toFixed(1)} ${line} ${X(t1).toFixed(1)},${Y(0).toFixed(1)}`;
+  const C = { worst: '#FF7A84', best: '#3DD68C', exit: '#9DB8FF', now: '#9DB8FF' };
+  const name = { worst: 'Worst', best: 'Best', exit: 'Exit', now: 'Now' };
+  // labels: above a high point, below a low one; flip or nudge when two would touch
+  const CW = 7.1;
+  const placed = [
+    { left: W - Rp - 8 * CW, w: 8 * CW, y: Y(-1) - 5 },   // "Stop −1R"
+    { left: W - Rp - 5 * CW, w: 5 * CW, y: Y(0) - 5 },    // "Entry"
+  ];
+  const labels = pts.filter((p) => p.k !== 'entry').map((p) => {
+    const text = `${name[p.k]} ${fmt.r(p.r)}${p.also ? ' · ' + p.also : ''}`, w = text.length * CW + 4;
+    let x = X(p.t), anchor = 'middle';
+    if (x - w / 2 < L) anchor = 'start'; else if (x + w / 2 > W - Rp) anchor = 'end';
+    const left = anchor === 'start' ? x : anchor === 'end' ? x - w : x - w / 2;
+    let above = p.k === 'worst' ? false : p.r >= 0;
+    const yOf = (ab) => (ab ? Y(p.r) - 11 : Y(p.r) + 20);
+    const hits = (ab) => placed.some((q) => Math.abs(q.y - yOf(ab)) < 17 && left < q.left + q.w + 4 && left + w + 4 > q.left);
+    if (hits(above) && !hits(!above)) above = !above;
+    let y = yOf(above);
+    // still touching: step the label up/down until it's clear
+    for (let k = 0; k < 4 && placed.some((q) => Math.abs(q.y - y) < 15 && left < q.left + q.w + 4 && left + w + 4 > q.left); k++) y += above ? -15 : 15;
+    y = Math.max(12, Math.min(H - B - 4, y));
+    placed.push({ left, w, y });
+    return { p, text, x, y, anchor };
   });
+  const dur = fmtGap(t1 - t0);
+  return html`<div ref=${ref} class="pchart">
+    <svg width=${W} height=${H} viewBox=${`0 0 ${W} ${H}`} role="img" aria-label=${`Trade path: worst ${fmt.r(lead.mae_r)}, best ${fmt.r(lead.mfe_r)}, ${open ? 'now' : 'exit'} ${fmt.r(res)}`}>
+      <defs>
+        <clipPath id="pcUp"><rect x="0" y="0" width=${W} height=${Y(0)}/></clipPath>
+        <clipPath id="pcDn"><rect x="0" y=${Y(0)} width=${W} height=${H}/></clipPath>
+        <linearGradient id="pcG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3DD68C" stop-opacity=".28"/><stop offset="1" stop-color="#3DD68C" stop-opacity=".02"/></linearGradient>
+        <linearGradient id="pcR" x1="0" y1="1" x2="0" y2="0"><stop offset="0" stop-color="#FF7A84" stop-opacity=".3"/><stop offset="1" stop-color="#FF7A84" stop-opacity=".03"/></linearGradient>
+      </defs>
+      ${ticks.map((v) => html`<g><line x1=${L} x2=${W - Rp} y1=${Y(v)} y2=${Y(v)} stroke=${v === 0 ? '#3A4252' : '#1B212C'} stroke-width="1"/>
+        <text x=${L - 8} y=${Y(v) + 4} text-anchor="end" class="pc-ax">${v === 0 ? '0R' : (v > 0 ? '+' : '−') + Math.abs(v) + 'R'}</text></g>`)}
+      <line x1=${L} x2=${W - Rp} y1=${Y(-1)} y2=${Y(-1)} stroke="#FF7A84" stroke-width="1.2" stroke-dasharray="5 4" opacity=".8"/>
+      <text x=${W - Rp} y=${Y(-1) - 5} text-anchor="end" class="pc-ax" fill="#FF7A84" style="fill:#FF9AA2">Stop −1R</text>
+      <text x=${W - Rp} y=${Y(0) - 5} text-anchor="end" class="pc-ax">Entry</text>
+      <polygon points=${area} fill="url(#pcG)" clip-path="url(#pcUp)"/>
+      <polygon points=${area} fill="url(#pcR)" clip-path="url(#pcDn)"/>
+      <polyline points=${line} fill="none" stroke="#C9D3E6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray=${open ? '' : ''}/>
+      <circle cx=${X(t0)} cy=${Y(0)} r="3.5" fill="#0B0E13" stroke="#C9D3E6" stroke-width="1.6"/>
+      ${pts.filter((p) => p.k !== 'entry').map((p) => html`<circle cx=${X(p.t)} cy=${Y(p.r)} r=${p.k === 'exit' || p.k === 'now' ? 4.5 : 4} fill=${C[p.k]} stroke="#0B0E13" stroke-width="2"/>`)}
+      ${labels.map((l) => html`<text x=${l.x} y=${l.y} text-anchor=${l.anchor} class="pc-lb" style=${`fill:${C[l.p.k]}`}>${l.text}</text>`)}
+      <text x=${L} y=${H - 9} class="pc-ax">${hm(t0)} entry</text>
+      <text x=${(L + W - Rp) / 2} y=${H - 9} text-anchor="middle" class="pc-ax">${dur}</text>
+      <text x=${W - Rp} y=${H - 9} text-anchor="end" class="pc-ax">${open ? hm(t1) + ' now' : hm(t1) + ' exit'}</text>
+    </svg>
+    <div class="pc-legend sub"><span><i style="background:#FF7A84"></i>worst point</span><span><i style="background:#3DD68C"></i>best point</span><span><i style="background:#9DB8FF"></i>${open ? 'now' : 'exit'}</span>
+      <span>Straight lines join the recorded points; the price moved in between.</span></div>
+  </div>`;
 }
 
 const fmtGap = (ms) => (ms < 60000 ? Math.round(ms / 1000) + ' s' : fmt.dur(ms));
@@ -212,23 +293,11 @@ function TradePath({ d }) {
   const leadAcc = i.accounts.find((a) => a.lead) || i.accounts[0];
   const R = leadAcc.risk;
   const res = leadAcc.r;
-  const lo = Math.min(-1, lead.mae_r ?? 0, res ?? 0), hi = Math.max(1, lead.mfe_r ?? 0, res ?? 0);
-  const x = (v) => ((v - lo) / (hi - lo) * 100).toFixed(2) + '%';
   const after = (t) => (t && i.open_time ? fmtGap(t - i.open_time) + ' after entry' : '');
-  const marks = [[-1, 'var(--neg)', 'S/L −1R', 'top'], [0, 'var(--mut)', 'entry', 'top'],
-    ...(lead.mae_r != null ? [[lead.mae_r, '#FF9AA2', 'worst ' + fmt.r(lead.mae_r), '']] : []),
-    ...(res != null ? [[res, '#9DB8FF', 'exit ' + fmt.r(res), 'top']] : []),
-    ...(lead.mfe_r != null ? [[lead.mfe_r, '#5BE3A0', 'best ' + fmt.r(lead.mfe_r), '']] : [])];
   return html`<div class="stack" style="gap:16px">
     <section class="card stack" style="gap:8px">
       <div class="spread"><h2 class="h2">How the trade moved</h2><span class="sub">${lead.name} · R of ${R != null ? fmt.plain(R) : '—'} risk${lead.partial ? ' · recorded from part-way through' : ''}</span></div>
-      ${lead.mae_r != null || lead.mfe_r != null ? html`<div class="tpbar" role="img" aria-label=${`Worst ${fmt.r(lead.mae_r)}, best ${fmt.r(lead.mfe_r)}, exit ${fmt.r(res)}`}>
-          <div class="ax"></div>
-          ${lead.mae_r != null && html`<div class="fill" style=${`left:${x(Math.min(0, lead.mae_r))};width:calc(${x(0)} - ${x(Math.min(0, lead.mae_r))});background:rgba(255,122,132,.55)`}></div>`}
-          ${lead.mfe_r != null && lead.mfe_r > 0 && html`<div class="fill" style=${`left:${x(0)};width:calc(${x(lead.mfe_r)} - ${x(0)});background:rgba(61,214,140,.5)`}></div>`}
-          ${placeLabels(marks.map(([v, c, l, pos]) => ({ p: (v - lo) / (hi - lo) * 100, c, l, top: pos === 'top' }))).map((m) => html`<span class="mk" style=${`left:${m.p.toFixed(2)}%;background:${m.c}`}></span>${m.show && html`<span class=${'lb' + (m.top ? ' top' : '')} style=${`left:${m.p.toFixed(2)}%;color:${m.c};transform:translateX(${m.p < 8 ? '0' : m.p > 92 ? '-100%' : '-50%'})`}>${m.l}</span>`}`)}
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:14px">
+      ${lead.mae_r != null || lead.mfe_r != null ? html`<${PathChart} i=${i} lead=${lead} res=${res}/>        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:4px">
           <div class="box"><div class="cap">Worst point</div><div class="num neg" style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(Math.min(0, lead.mae_r))} <span class="sub">${fmt.money(Math.min(0, lead.mae))}</span></div><div class="sub">${lead.mae > 0 ? 'never below entry' : after(lead.mae_t)}</div></div>
           <div class="box"><div class="cap">Best point</div><div class=${cls('num', sgn(lead.mfe_r))} style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(lead.mfe_r)} <span class="sub">${fmt.money(lead.mfe)}</span></div><div class="sub">${after(lead.mfe_t)}</div></div>
           <div class="box"><div class="cap">Kept of the best</div><div class="num" style="font-size:16px;font-weight:600;margin-top:3px">${res > 0 && lead.mfe_r > 0 ? Math.round(Math.min(1, res / lead.mfe_r) * 100) + '%' : '—'}</div><div class="sub">${res > 0 && lead.mfe_r > 0 ? `gave back ${Math.max(0, lead.mfe_r - res).toFixed(2)}R` : lead.mfe_r > 0 ? `ended at a loss after +${lead.mfe_r.toFixed(2)}R` : 'never in profit'}</div></div>

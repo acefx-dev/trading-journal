@@ -142,6 +142,11 @@ on('PUT', '/settings', async ({ db, request }) => {
     ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', k, list.join(',')));
   }
   if (b.sentiment_prompt != null) ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'sentiment_prompt', String(b.sentiment_prompt).slice(0, 8000)));
+  if (b.dash_layout != null) {
+    const txt = JSON.stringify(b.dash_layout);
+    if (txt.length > 8000 || typeof b.dash_layout !== 'object') throw new HttpError(400, 'Dashboard layout is too large');
+    ops.push(stmt(db, 'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', 'dash_layout', txt));
+  }
   if (b.saved_filters != null) {
     if (!Array.isArray(b.saved_filters) || b.saved_filters.length > 40) throw new HttpError(400, 'Up to 40 saved filters');
     const list = b.saved_filters.map((f) => ({ name: String(f && f.name || '').trim().slice(0, 60), f: f && typeof f.f === 'object' ? f.f : {} })).filter((f) => f.name);

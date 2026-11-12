@@ -1,5 +1,6 @@
 import { html, useState, useEffect, useStore, useData, api, scopeQs, fmt, sgn, cls, Money, R, Dir, Bar, Loading, LineChart, PageHead, toast, store, setStore, reloadBoot, kindLabel, roleLabel, Icon } from '../lib.js';
 import { sessionsInBrisbane, openSessions, SESSIONS, tzOffsetMs } from '../sessions.js';
+import { PANELS, SIZES, DEFAULTS, normalise, useScreen, movePanel, nudge, setSize, setHidden, setColumns, setWidth } from '../dashlayout.js';
 
 const COLORS = ['#5B8CFF', '#F5A524', '#2EC4B6', '#C38BFF', '#FF8FB1'];
 const DASHES = ['', '7 5', '2 4', '10 4 2 4', '4 4'];
@@ -18,21 +19,60 @@ export function SampleEmpty() {
 export function Dashboard() {
   const s = useStore();
   const st = useData(() => api('/dashboard?' + scopeQs()), [s.acct, s.firm]);
+  const [edit, setEdit] = useState(false);
   const sub = new Intl.DateTimeFormat('en-AU', { timeZone: 'Australia/Brisbane', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()) + ' AEST';
-  return html`<${PageHead} title="Dashboard" sub=${sub}>${st.data && html`<${AlertPill} accounts=${st.data.accounts}/>`}<//>
+  return html`<${PageHead} title="Dashboard" sub=${sub}>${st.data && html`<${AlertPill} accounts=${st.data.accounts}/>`}
+      <button type="button" class=${cls('btn sm', edit && 'pri')} onClick=${() => setEdit(!edit)} aria-pressed=${edit} title="Move, resize and hide panels">${edit ? 'Done' : 'Customise'}</button><//>
     <${SampleEmpty}/>
-    <${Loading} state=${st}>${(d) => html`<${Body} d=${d} reload=${st.reload}/>`}<//>`;
+    <${Loading} state=${st}>${(d) => html`<${Body} d=${d} reload=${st.reload} edit=${edit} setEdit=${setEdit}/>`}<//>`;
 }
 
-function Body({ d, reload }) {
+function Body({ d, reload, edit, setEdit }) {
+  const s = useStore();
+  const { bp, fit } = useScreen();
+  const all = (() => { try { return JSON.parse(s.boot.settings.dash_layout || '{}'); } catch { return {}; } })();
+  const [layout, setLayoutState] = useState(() => normalise(all[bp], bp));
+  useEffect(() => { setLayoutState(normalise(all[bp], bp)); }, [bp, s.boot.settings.dash_layout]);
+  const save = async (l) => {
+    setLayoutState(l);
+    const next = { ...all, [bp]: l };
+    try { await api('/settings', { method: 'PUT', body: { dash_layout: next } }); s.boot.settings.dash_layout = JSON.stringify(next); }
+    catch (e) { toast(e.message, true); }
+  };
+
   const combined = d.accounts.length > 1;
   const showToday = d.lastDay === d.today;
   const ls = d.lastDaySummary;
   const s30 = d.stats30;
   const toReview = d.recent.filter((i) => !i.reviewed).length;
   const ideas = [...d.open, ...d.recent];
+  const panels = {
+    chart: () => html`<section class="panel" style="min-height:240px">
+        <div class="ph"><h2>Return by account · this month</h2>
+          <div class="hstack" style="gap:12px;font-size:11.5px;color:var(--text2)">${d.accounts.slice(0, 5).map((a, i) => html`<span class="hstack" style="gap:5px">
+            <i style=${`width:14px;height:0;border-top:2px ${DASHES[i % 5] ? 'dashed' : 'solid'} ${COLORS[i % 5]};display:inline-block`}></i>${a.name}
+            <b class=${cls('num', sgn(a.monthPct))}>${fmt.pct(a.monthPct)}</b></span>`)}</div></div>
+        <div class="pb" style="flex:1;min-height:0;display:flex;align-items:center">
+          <${LineChart} height=${230} label="Return by account this month" yFmt=${(v) => (v > 0 ? '+' : '') + v.toFixed(1) + '%'}
+            series=${d.accounts.map((a, i) => ({ name: a.name, color: COLORS[i % 5], dash: DASHES[i % 5], points: [{ x: firstOfMonth(), y: 0 }, ...a.curve.map((p) => ({ x: p.t, y: p.pct }))] }))}
+            xLabels=${monthLabels()}/></div>
+      </section>`,
+    ideas: () => html`<section class="panel" style="min-height:200px">
+        <div class="ph"><h2>Recent trading ideas</h2><div class="hstack" style="gap:10px"><span class="sub">${d.open.length} open · ${toReview} to review</span><a href="#/ideas" style="font-size:12px">All ideas</a></div></div>
+        <div class="scrolly" style="padding:0 6px 6px;overflow-x:auto">${ideas.length ? html`<${IdeaTable} ideas=${ideas} compact/>` : html`<div class="empty">No trades yet. They appear here as soon as the MT5 connector sends them.</div>`}</div>
+      </section>`,
+    calendar: () => html`<${EconCalendar}/>`,
+    hours: () => html`<${Sessions}/>`,
+    split: () => html`<${ProfitSplit} payouts=${d.payouts}/>`,
+    prep: () => html`<${Prep} prep=${d.prep} reload=${reload}/>`,
+    accounts: () => html`<${AccountsPanel} accounts=${d.accounts}/>`,
+  };
+  const hidden = new Set(layout.hidden);
+  const showKpis = !hidden.has('kpis');
   return html`
-  <section class="kstrip" aria-label="Key figures">
+  ${edit && html`<${EditBar} layout=${layout} bp=${bp} save=${save} done=${() => setEdit(false)}/>`}
+  ${(showKpis || edit) && html`<div class=${cls(edit && 'dedit-k', !showKpis && 'dhidden')}>${edit && html`<div class="dtools"><b>Key figures</b><button type="button" class="btn sm" onClick=${() => save(setHidden(layout, 'kpis', showKpis))}>${showKpis ? 'Hide' : 'Show'}</button></div>`}
+  ${showKpis && html`<section class="kstrip" aria-label="Key figures">
     <${Cell} label=${showToday ? 'Today' : d.lastDay ? 'Last session · ' + fmt.date(Date.parse(d.lastDay + 'T12:00:00+10:00')).split(' ')[0].replace(',', '') : 'Last session'}
       value=${fmt.money(d.lastDayNet)} tone=${sgn(d.lastDayNet)}
       sub=${ls ? `${ls.wins}W ${ls.losses}L${combined ? ' · R-basis ' + fmt.money(d.lastDayBasis) : ''}` : 'No closed trades yet'}/>
@@ -43,36 +83,61 @@ function Body({ d, reload }) {
     <${Cell} label="Expectancy · 30d" value=${fmt.r(s30.expectancyR)} tone=${sgn(s30.expectancyR)} sub=${`≈ ${fmt.money(s30.expectancy)} per idea`}/>
     <${Cell} label="Max drawdown" value=${d.drawdown ? fmt.pct(-d.drawdown.maxDdPct) : '—'} tone=${d.drawdown && d.drawdown.maxDdPct ? 'neg' : ''}
       sub=${d.drawdown ? `${fmt.money(-d.drawdown.maxDd)} · ${d.drawdown.account}` : '—'}/>
-  </section>
+  </section>`}</div>`}
 
-  <div class="dash3 fill">
-    <div class="colstack">
-      <section class="panel" style="flex:0 0 42%;min-height:260px">
-        <div class="ph"><h2>Return by account · this month</h2>
-          <div class="hstack" style="gap:12px;font-size:11.5px;color:var(--text2)">${d.accounts.slice(0, 5).map((a, i) => html`<span class="hstack" style="gap:5px">
-            <i style=${`width:14px;height:0;border-top:2px ${DASHES[i % 5] ? 'dashed' : 'solid'} ${COLORS[i % 5]};display:inline-block`}></i>${a.name}
-            <b class=${cls('num', sgn(a.monthPct))}>${fmt.pct(a.monthPct)}</b></span>`)}</div></div>
-        <div class="pb" style="flex:1;min-height:0;display:flex;align-items:center">
-          <${LineChart} height=${230} label="Return by account this month" yFmt=${(v) => (v > 0 ? '+' : '') + v.toFixed(1) + '%'}
-            series=${d.accounts.map((a, i) => ({ name: a.name, color: COLORS[i % 5], dash: DASHES[i % 5], points: [{ x: firstOfMonth(), y: 0 }, ...a.curve.map((p) => ({ x: p.t, y: p.pct }))] }))}
-            xLabels=${monthLabels()}/></div>
-      </section>
-      <section class="panel" style="flex:1;min-height:280px">
-        <div class="ph"><h2>Recent trading ideas</h2><div class="hstack" style="gap:10px"><span class="sub">${d.open.length} open · ${toReview} to review</span><a href="#/ideas" style="font-size:12px">All ideas</a></div></div>
-        <div class="scrolly" style="padding:0 6px 6px;overflow-x:auto">${ideas.length ? html`<${IdeaTable} ideas=${ideas} compact/>` : html`<div class="empty">No trades yet. They appear here as soon as the MT5 connector sends them.</div>`}</div>
-      </section>
-    </div>
+  <${Grid} layout=${layout} panels=${panels} fit=${fit} edit=${edit} save=${save}/>`;
+}
 
-    <div class="colstack">
-      <${EconCalendar}/>
-      <${Sessions}/>
-      <${ProfitSplit} payouts=${d.payouts}/>
-    </div>
+const SIZE_FLEX = { s: 1, m: 2, l: 3 };
+const SIZE_PX = { s: 260, m: 400, l: 560 };
 
-    <div class="colstack wide2">
-      <${Prep} prep=${d.prep} reload=${reload}/>
-      <${AccountsPanel} accounts=${d.accounts}/>
-    </div>
+/** The panel columns. In one-screen mode panels share each column's height by size; otherwise S/M/L are fixed heights. */
+function Grid({ layout, panels, fit, edit, save }) {
+  const [drag, setDrag] = useState(null);
+  const hidden = new Set(layout.hidden);
+  const drop = (c, i) => (e) => { e.preventDefault(); const id = drag || e.dataTransfer.getData('text/plain'); setDrag(null); if (id) save(movePanel(layout, id, c, i)); };
+  const over = (e) => { if (drag) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } };
+  return html`<div class=${cls('dgrid', fit && 'fill', edit && 'editing')} style=${`grid-template-columns:${layout.widths.map((w) => `minmax(0,${w}fr)`).join(' ')}`}>
+    ${layout.cols.map((col, c) => html`<div class="colstack" onDragOver=${over} onDrop=${drop(c, col.length)}>
+      ${edit && layout.cols.length > 1 && html`<div class="dcolbar" aria-label=${`Column ${c + 1} width`}><span class="sub">Column ${c + 1}</span>
+        <span class="hstack" style="gap:4px"><button type="button" class="btn sm" onClick=${() => save(setWidth(layout, c, -0.1))} aria-label="Narrower">−</button><span class="num sub">${layout.widths[c].toFixed(1)}</span><button type="button" class="btn sm" onClick=${() => save(setWidth(layout, c, 0.1))} aria-label="Wider">+</button></span></div>`}
+      ${col.filter((p) => edit || !hidden.has(p.id)).map((p, i) => {
+        const hid = hidden.has(p.id);
+        const style = hid ? '' : fit ? (p.size === 'auto' ? 'flex:0 0 auto' : `flex:${SIZE_FLEX[p.size]} 1 0;min-height:150px`) : (p.size === 'auto' ? '' : `height:${SIZE_PX[p.size]}px`);
+        return html`<div class=${cls('dpanel', p.size === 'auto' && 'auto', hid && 'dhidden', drag === p.id && 'dragging')} style=${style} key=${p.id}
+          onDragOver=${over} onDrop=${(e) => { e.stopPropagation(); drop(c, col.findIndex((x) => x.id === p.id))(e); }}>
+          ${edit && html`<${PanelTools} p=${p} hid=${hid} layout=${layout} save=${save} onDragStart=${(e) => { setDrag(p.id); e.dataTransfer.setData('text/plain', p.id); e.dataTransfer.effectAllowed = 'move'; }} onDragEnd=${() => setDrag(null)}/>`}
+          ${!hid && panels[p.id]()}
+        </div>`;
+      })}
+      ${edit && html`<div class="ddrop sub" onDragOver=${over} onDrop=${drop(c, col.length)}>${col.length ? 'Drop here to move to the end' : 'Drop a panel here'}</div>`}
+    </div>`)}
+  </div>`;
+}
+
+function PanelTools({ p, hid, layout, save, onDragStart, onDragEnd }) {
+  const mv = (dir) => save(nudge(layout, p.id, dir));
+  return html`<div class="dtools" draggable="true" onDragStart=${onDragStart} onDragEnd=${onDragEnd}>
+    <span class="dgrip" aria-hidden="true" title="Drag to move">⠿</span><b>${PANELS[p.id]}</b>
+    <span class="hstack" style="gap:3px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end">
+      ${!hid && html`<div class="seg2" role="group" aria-label=${PANELS[p.id] + ' size'}>${SIZES.map(([k, l]) => html`<button type="button" class=${p.size === k ? 'on' : ''} aria-pressed=${p.size === k} onClick=${() => save(setSize(layout, p.id, k))} title=${k === 'auto' ? 'Fit the content' : 'Size ' + l}>${l}</button>`)}</div>`}
+      <button type="button" class="btn sm" onClick=${() => mv('up')} aria-label="Move up">↑</button>
+      <button type="button" class="btn sm" onClick=${() => mv('down')} aria-label="Move down">↓</button>
+      ${layout.cols.length > 1 && html`<button type="button" class="btn sm" onClick=${() => mv('left')} aria-label="Move to the left column">←</button>
+        <button type="button" class="btn sm" onClick=${() => mv('right')} aria-label="Move to the right column">→</button>`}
+      <button type="button" class="btn sm" onClick=${() => save(setHidden(layout, p.id, !hid))}>${hid ? 'Show' : 'Hide'}</button></span>
+  </div>`;
+}
+
+function EditBar({ layout, bp, save, done }) {
+  const name = { desktop: 'desktop', tablet: 'tablet', phone: 'phone' }[bp];
+  return html`<div class="dedit-bar" role="region" aria-label="Customise the dashboard">
+    <div><b>Customising the ${name} layout</b><div class="sub">${bp === 'desktop' ? 'Drag a panel by its bar, or use the arrows.' : 'Use the arrows to move a panel.'} S/M/L set its height; Fit sizes it to its content. ${bp === 'desktop' ? 'Tablet and phone' : 'Other screen sizes'} keep their own layout.</div></div>
+    <div class="hstack" style="gap:6px">
+      ${bp !== 'phone' && html`<label class="hstack sub" style="gap:6px">Columns
+        <select class="inp sm" value=${layout.cols.length} onChange=${(e) => save(setColumns(layout, Number(e.target.value)))}>${(bp === 'desktop' ? [2, 3, 4] : [1, 2, 3]).map((n) => html`<option value=${n}>${n}</option>`)}</select></label>`}
+      <button type="button" class="btn sm" onClick=${() => { if (confirm('Reset the ' + name + ' layout to the default?')) save(JSON.parse(JSON.stringify(DEFAULTS[bp]))); }}>Reset</button>
+      <button type="button" class="btn sm pri" onClick=${done}>Done</button></div>
   </div>`;
 }
 
@@ -391,7 +456,7 @@ function EconCalendar() {
   const pick = (v) => { setSrc(v); put('tj.calSrc', v); };
   const flip = () => { const v = !dark; setDark(v); put('tj.calDark', v ? '1' : '0'); };
   const tv = src !== 'mfb';
-  return html`<section class="panel" style="flex:1;min-height:190px">
+  return html`<section class="panel" style="min-height:190px">
     <div class="ph"><div><h2>Economic calendar</h2><div class="sub" style="margin-top:2px">High impact${tv ? ' · your time zone' : ' · set GMT +10 once'}</div></div>
       <div class="hstack" style="gap:6px;flex-wrap:nowrap">
         <div class="seg2" role="group" aria-label="Calendar source">
