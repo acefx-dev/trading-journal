@@ -277,7 +277,8 @@ on('PUT', '/accounts/:id', async ({ db, params, request }) => {
   const keys = Object.keys(o);
   if (!keys.length) return { ok: true };
   await run(db, `UPDATE accounts SET ${keys.map((k) => k + ' = ?').join(', ')} WHERE id = ?`, ...keys.map((k) => o[k]), aid);
-  await audit(db, { actor: 'user', account_id: aid, action: 'Account settings changed', detail: o }).run();
+  const action = keys.length === 1 && o.status ? (o.status === 'archived' ? 'Account archived' : 'Account restored') : 'Account settings changed';
+  await audit(db, { actor: 'user', account_id: aid, action, detail: o }).run();
   return { ok: true };
 });
 

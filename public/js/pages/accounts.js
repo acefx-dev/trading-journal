@@ -62,6 +62,21 @@ export function Accounts() {
 const AGRID = 'minmax(0,1.6fr) 120px 118px minmax(0,1fr) 56px 86px';
 const TABS = [['overview', 'Overview'], ['pay', 'Payouts'], ['share', 'Share'], ['conn', 'MT5 connector']];
 
+/** Archive (hide, keep history, stop syncing) or restore an account. */
+async function setArchived(a, archive, all) {
+  if (archive) {
+    const copies = all.filter((x) => x.master_account_id === a.id && x.status === 'active');
+    const msg = `Archive ${a.name}?\n\n• It disappears from the dashboard, Trading Floor, analytics and account filters.\n• Its trades, reviews and history are kept. Find it under Accounts → Archived.\n• Its MT5 connector stops syncing (remove the EA from that terminal).\n• You can restore it at any time.`
+      + (copies.length ? `\n\n${copies.map((c) => c.name).join(', ')} still copy${copies.length === 1 ? 'ies' : ''} this account; they stay active.` : '');
+    if (!confirm(msg)) return;
+  }
+  try {
+    await api('/accounts/' + a.id, { method: 'PUT', body: { status: archive ? 'archived' : 'active' } });
+    await reloadBoot();
+    toast(archive ? `${a.name} archived` : `${a.name} restored`);
+  } catch (e) { toast(e.message, true); }
+}
+
 function Detail({ a, p, payout, firm, onEdit, onConnect, onImport, reloadPay }) {
   const s = useStore();
   const [tab, setTab] = useState('overview');
@@ -72,7 +87,10 @@ function Detail({ a, p, payout, firm, onEdit, onConnect, onImport, reloadPay }) 
       <div style="min-width:0;flex:1"><div class="hstack" style="gap:8px"><h2 style="margin:0;font-size:18px;font-weight:600">${a.name}</h2>
         <span class=${cls('chip', a.kind === 'funded' ? 'b' : a.kind === 'challenge' ? 'a' : '')}>${kindLabel(a.kind)}</span>${a.status === 'archived' && html`<span class="chip">Archived</span>`}</div>
         <div class="sub" style="margin-top:4px">${firm || 'No prop firm'} · login ${a.login_masked} · ${roleLabel(a)}${master ? ' of ' + master.name : ''}</div></div>
-      <button class="btn sm" onClick=${onEdit}><${Icon} name="edit" size=${14}/>Edit</button></div>
+      <div class="hstack" style="gap:6px;flex-wrap:nowrap">
+        <button class="btn sm" onClick=${() => setArchived(a, a.status !== 'archived', s.boot.accounts)} title=${a.status === 'archived' ? 'Bring this account back into the journal' : 'Hide this account; its history is kept'}>
+          <${Icon} name=${a.status === 'archived' ? 'sync' : 'archive'} size=${14}/>${a.status === 'archived' ? 'Restore' : 'Archive'}</button>
+        <button class="btn sm" onClick=${onEdit}><${Icon} name="edit" size=${14}/>Edit</button></div></div>
     <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => setTab(k)}>${l}</button>`)}</div>
     <div class="scrolly" style="padding:16px">
       ${tab === 'overview' && html`<div class="stack" style="gap:16px">
