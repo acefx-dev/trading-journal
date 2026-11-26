@@ -146,7 +146,7 @@ function IdeaPanel({ id, prev, next, reloadList }) {
         ${(() => { const nb = openRiskNow(d); const v = nb && nb.get(i.account_id); return nb && nb.has(i.account_id) ? html`<div class="sub">now ${v === 0 ? html`<span class="pos">$0 (stop at entry)</span>` : v == null ? 'unknown' : fmt.plain(v)}</div>` : ''; })()}<div class="sub">${leadAcc.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : 'lead account'}</div></div>
       ${pth && pth.mae_r != null && html`<div class="kcell"><div class="cap" title="Worst point of the combined floating P&L while the trade was open">Drawdown</div>
         <div class="num neg" style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(Math.min(0, pth.mae_r))}</div>
-        <div class="sub" title="Best point during the trade">best <span class=${sgn(pth.mfe_r)}>${fmt.r(pth.mfe_r)}</span></div></div>`}
+        <div class="sub" title="Best point during the trade">best <span class=${sgn(pth.mfe_r)}>${fmt.r(pth.mfe_r)}</span>${i.accounts.length > 1 ? ` · ${i.lead_name}` : ''}</div></div>`}
       <div class="kcell"><div class="cap">Checklist</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${d.checklist.length ? done + ' / ' + d.checklist.length : '—'}</div><div class="sub">${!i.strategy_id ? 'no strategy' : d.checklist.length - done ? (d.checklist.length - done) + ' not ticked' : 'all ticked'}</div></div>
     </div>
     <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => pickTab(k)}>${l}${k === 'chart' && d.screenshots.length + d.links.length > 0 ? html` <span class="chip num" style="height:18px;padding:0 6px;font-size:11px">${d.screenshots.length + d.links.length}</span>` : ''}</button>`)}</div>
@@ -287,24 +287,46 @@ const fmtGap = (ms) => (ms < 60000 ? Math.round(ms / 1000) + ' s' : fmt.dur(ms))
 /** How the trade moved (in R of the risk held) and how the combined risk changed as stops moved. */
 function TradePath({ d }) {
   const i = d.idea, list = d.tradePath || [];
+  const [selId, setSel] = useState(null);
   const lead = list.find((x) => x.lead) || list[0];
   if (!lead) return html`<div class="box stack" style="gap:6px"><b>Not recorded for this trade</b>
     <div class="sub">The drawdown, best point and stop moves come from connector 1.02 on ${i.lead_name}. Install it in MT5 (Accounts & sync → MT5 connector) and new trades will show their path here. Older trades keep using the first stop of each position.</div></div>`;
-  const leadAcc = i.accounts.find((a) => a.lead) || i.accounts[0];
-  const R = leadAcc.risk;
-  const res = leadAcc.r;
+  // every account has its own worst / best point (its own positions, its own risk), so pick one
+  const recorded = list.filter((x) => x.mae_r != null || x.mfe_r != null);
+  const cur = list.find((x) => x.account_id === selId) || lead;
+  const accOf = (x) => i.accounts.find((a) => a.account_id === x.account_id) || {};
+  const curAcc = accOf(cur);
+  const R = curAcc.risk;
+  const res = curAcc.r;
   const after = (t) => (t && i.open_time ? fmtGap(t - i.open_time) + ' after entry' : '');
+  const short = (n) => (n || '').length > 18 ? n.slice(0, 17) + '…' : n;
+  const kept = (x, r) => (r > 0 && x.mfe_r > 0 ? Math.round(Math.min(1, r / x.mfe_r) * 100) + '%' : '—');
   return html`<div class="stack" style="gap:16px">
     <section class="card stack" style="gap:8px">
-      <div class="spread"><h2 class="h2">How the trade moved</h2><span class="sub">${lead.name} · R of ${R != null ? fmt.plain(R) : '—'} risk${lead.partial ? ' · recorded from part-way through' : ''}</span></div>
-      ${lead.mae_r != null || lead.mfe_r != null ? html`<${PathChart} i=${i} lead=${lead} res=${res}/>        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:4px">
-          <div class="box"><div class="cap">Worst point</div><div class="num neg" style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(Math.min(0, lead.mae_r))} <span class="sub">${fmt.money(Math.min(0, lead.mae))}</span></div><div class="sub">${lead.mae > 0 ? 'never below entry' : after(lead.mae_t)}</div></div>
-          <div class="box"><div class="cap">Best point</div><div class=${cls('num', sgn(lead.mfe_r))} style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(lead.mfe_r)} <span class="sub">${fmt.money(lead.mfe)}</span></div><div class="sub">${after(lead.mfe_t)}</div></div>
-          <div class="box"><div class="cap">Kept of the best</div><div class="num" style="font-size:16px;font-weight:600;margin-top:3px">${res > 0 && lead.mfe_r > 0 ? Math.round(Math.min(1, res / lead.mfe_r) * 100) + '%' : '—'}</div><div class="sub">${res > 0 && lead.mfe_r > 0 ? `gave back ${Math.max(0, lead.mfe_r - res).toFixed(2)}R` : lead.mfe_r > 0 ? `ended at a loss after +${lead.mfe_r.toFixed(2)}R` : 'never in profit'}</div></div>
-          <div class="box"><div class="cap">Went against you first?</div><div style="font-size:15px;font-weight:600;margin-top:3px">${lead.mae_t && lead.mfe_t ? (lead.mae_t < lead.mfe_t ? 'Yes' : 'No') : '—'}</div><div class="sub">${lead.mae_r != null ? (lead.mae_r > -0.25 ? 'little heat (under 0.25R)' : lead.mae_r <= -0.9 ? 'close to the stop' : 'normal heat') : ''}</div></div>
+      <div class="spread" style="flex-wrap:wrap;gap:8px"><h2 class="h2">How the trade moved</h2>
+        ${list.length > 1 && html`<div class="seg2" role="group" aria-label="Account" style="max-width:100%;overflow-x:auto">${list.map((x) => html`<button type="button" class=${cur.account_id === x.account_id ? 'on' : ''} aria-pressed=${cur.account_id === x.account_id} onClick=${() => setSel(x.account_id)} title=${x.name + (x.lead ? ' (lead)' : '')}>${short(x.name)}${x.lead ? ' · lead' : ''}</button>`)}</div>`}</div>
+      <div class="sub">${cur.name} · R of ${R != null ? fmt.plain(R) : '—'} risk held on this account${cur.partial ? ' · recorded from part-way through' : ''}</div>
+      ${cur.mae_r != null || cur.mfe_r != null ? html`<${PathChart} i=${i} lead=${cur} res=${res}/>        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:4px">
+          <div class="box"><div class="cap">Worst point</div><div class="num neg" style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(Math.min(0, cur.mae_r))} <span class="sub">${fmt.money(Math.min(0, cur.mae))}</span></div><div class="sub">${cur.mae > 0 ? 'never below entry' : after(cur.mae_t)}</div></div>
+          <div class="box"><div class="cap">Best point</div><div class=${cls('num', sgn(cur.mfe_r))} style="font-size:16px;font-weight:600;margin-top:3px">${fmt.r(cur.mfe_r)} <span class="sub">${fmt.money(cur.mfe)}</span></div><div class="sub">${after(cur.mfe_t)}</div></div>
+          <div class="box"><div class="cap">Kept of the best</div><div class="num" style="font-size:16px;font-weight:600;margin-top:3px">${res > 0 && cur.mfe_r > 0 ? Math.round(Math.min(1, res / cur.mfe_r) * 100) + '%' : '—'}</div><div class="sub">${res > 0 && cur.mfe_r > 0 ? `gave back ${Math.max(0, cur.mfe_r - res).toFixed(2)}R` : cur.mfe_r > 0 ? `ended at a loss after +${cur.mfe_r.toFixed(2)}R` : 'never in profit'}</div></div>
+          <div class="box"><div class="cap">Went against you first?</div><div style="font-size:15px;font-weight:600;margin-top:3px">${cur.mae_t && cur.mfe_t ? (cur.mae_t < cur.mfe_t ? 'Yes' : 'No') : '—'}</div><div class="sub">${cur.mae_r != null ? (cur.mae_r > -0.25 ? 'little heat (under 0.25R)' : cur.mae_r <= -0.9 ? 'close to the stop' : 'normal heat') : ''}</div></div>
         </div>` : html`<div class="sub">The drawdown and best point weren't recorded (the connector wasn't running during the trade).</div>`}
-      <div class="sub">Combined floating P&L of all positions on ${lead.name}, checked every second while the trade was open.</div>
+      ${cur.mae_r != null || cur.mfe_r != null ? '' : html`<div class="sub">${recorded.length ? `Pick an account above: ${recorded.map((x) => x.name).join(', ')} ${recorded.length > 1 ? 'have' : 'has'} it.` : ''}</div>`}
+      <div class="sub">Floating P&L of all positions on ${cur.name} only (other accounts are not added in), checked every second while the trade was open.</div>
     </section>
+    ${list.length > 1 && html`<section class="card flush">
+      <div class="card-head"><div><h2 class="h2">Worst and best point by account</h2>
+        <div class="sub" style="margin-top:4px">Each account measured on its own positions, in R of the risk it held. Tap a row to see its chart.</div></div></div>
+      <div class="scroll"><table class="tbl"><thead><tr><th>Account</th><th class="r">Worst</th><th class="r">Best</th><th class="r">Result</th><th class="r" title="Share of the best point kept at exit">Kept</th></tr></thead>
+      <tbody>${list.map((x) => { const a = accOf(x); const has = x.mae_r != null || x.mfe_r != null; return html`<tr class=${cls('click', cur.account_id === x.account_id && 'sel')} onClick=${() => setSel(x.account_id)} style="cursor:pointer">
+        <td><b>${x.name}</b>${x.lead ? html`<div class="sub">lead</div>` : ''}</td>
+        <td class="r num">${has && x.mae_r != null ? html`<span class="neg">${fmt.r(Math.min(0, x.mae_r))}</span><div class="sub">${fmt.money(Math.min(0, x.mae))}</div>` : html`<span class="sub">not recorded</span>`}</td>
+        <td class="r num">${has && x.mfe_r != null ? html`<span class=${sgn(x.mfe_r)}>${fmt.r(x.mfe_r)}</span><div class="sub">${fmt.money(x.mfe)}</div>` : html`<span class="sub">—</span>`}</td>
+        <td class=${cls('r num', sgn(a.r))}>${fmt.r(a.r)}</td>
+        <td class="r num">${has ? kept(x, a.r) : '—'}</td></tr>`; })}</tbody></table></div>
+      ${list.some((x) => x.mae_r == null && x.mfe_r == null) && html`<div class="sub" style="padding:10px 16px">"Not recorded" means connector 1.02 wasn't running on that account during the trade.</div>`}
+    </section>`}
     ${list.filter((a) => a.steps && a.steps.length).map((a) => html`<section class="card flush">
       <div class="card-head"><div><h2 class="h2">Risk while the idea was open · ${a.name}</h2>
         <div class="sub" style="margin-top:4px">Risk used: <b class="num" style="color:var(--text)">${a.peak != null ? fmt.plain(a.peak) : '—'}</b> (highest held for ${d.graceSec} s or more)${a.initial != null ? ` · first stops added up: ${fmt.plain(a.initial)}` : ''}${a.transient != null && a.transient > (a.peak || 0) + 0.01 ? ` · brief high ${fmt.plain(a.transient)} not counted` : ''}</div></div></div>

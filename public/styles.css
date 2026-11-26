@@ -171,6 +171,7 @@ textarea.inp { padding: 10px 12px; min-height: 110px; resize: vertical; line-hei
 .tbl td { padding: 11px 12px; border-bottom: 1px solid var(--line2); white-space: nowrap; }
 .tbl tr:last-child td { border-bottom: 0; }
 .tbl tr.click { cursor: pointer; } .tbl tr.click:hover td { background: #141922; }
+.tbl tr.sel td { background: #161C29; } .tbl tr.sel td:first-child { box-shadow: inset 3px 0 0 #9DB8FF; }
 .r { text-align: right !important; }
 .empty { padding: 28px; text-align: center; color: var(--mut); }
 .warn { display: flex; gap: 10px; align-items: flex-start; padding: 12px 16px; border-radius: 12px; background: #2A2110; color: #F5CF8A; font-size: 13px; line-height: 1.5; }
