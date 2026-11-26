@@ -113,11 +113,15 @@ function IdeaPanel({ id, prev, next, reloadList }) {
   const reload = () => { st.reload(); reloadList(); };
   const lead = d.positions.filter((p) => p.account_id === i.account_id);
   const leadAcc = i.accounts.find((a) => a.lead) || i.accounts[0];
-  const pth = leadAcc.path;
+  // the account picked in the top-right menu drives the numbers; otherwise the lead account
+  const pickedId = /^\d+$/.test(String(store.acct)) ? Number(store.acct) : null;
+  const focus = i.accounts.find((a) => a.account_id === pickedId) || leadAcc;
+  const multi = i.accounts.length > 1;
+  const pth = focus.path;
   const done = d.checklist.filter((c) => c.checked).length;
   const risk = d.risk, sent = d.sentiment;
   const twins = [...new Set(d.positions.filter((p) => p.copy_link === 'twin').map((p) => p.account_id))];
-  const leadCheck = risk && risk.checks.find((c) => c.account_id === i.account_id);
+  const leadCheck = risk && risk.checks.find((c) => c.account_id === focus.account_id);
   const toggleReviewed = async () => {
     try { await api('/ideas/' + i.id, { method: 'PUT', body: { reviewed: !i.reviewed_at } }); toast(i.reviewed_at ? 'Marked as not reviewed' : 'Marked as reviewed'); reload(); } catch (e) { toast(e.message, true); }
   };
@@ -140,22 +144,24 @@ function IdeaPanel({ id, prev, next, reloadList }) {
         · ${lead.length} position${lead.length > 1 ? 's' : ''} on ${i.lead_name}${i.accounts.length > 1 ? ` · copied to ${i.accounts.length - 1} account${i.accounts.length > 2 ? 's' : ''}` : ''}</div>
     </div>
     <div class="mstrip">
-      <div class="kcell"><div class="cap">${i.accounts.length > 1 ? 'Combined P&L' : 'Net P&L'}</div><div class=${cls('num', sgn(i.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.net)}</div><div class="sub" title="Commission, swap and fees">${i.status === 'open' ? 'floating' : `after ${fmt.money(i.costs)} costs`}</div></div>
-      <div class="kcell"><div class="cap">Result</div><div class=${cls('num', sgn(leadAcc.r))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(leadAcc.r)}</div><div class="sub">${i.lead_name}</div></div>
-      <div class="kcell"><div class="cap" title=${pth && pth.peak ? 'Highest combined risk you held (stop moves counted)' : 'Sum of each position\'s first stop'}>${pth && pth.peak ? 'Risk (peak held)' : 'Initial risk'}</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${leadAcc.risk != null ? fmt.plain(leadAcc.risk) : '—'}</div>
-        ${(() => { const nb = openRiskNow(d); const v = nb && nb.get(i.account_id); return nb && nb.has(i.account_id) ? html`<div class="sub">now ${v === 0 ? html`<span class="pos">$0 (stop at entry)</span>` : v == null ? 'unknown' : fmt.plain(v)}</div>` : ''; })()}<div class="sub">${leadAcc.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : 'lead account'}</div></div>
+      ${multi && pickedId === focus.account_id
+        ? html`<div class="kcell"><div class="cap">Net P&L</div><div class=${cls('num', sgn(focus.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(focus.net)}</div><div class="sub" title="All accounts in this trade, added up">all accounts ${fmt.money(i.net)}</div></div>`
+        : html`<div class="kcell"><div class="cap">${multi ? 'Combined P&L' : 'Net P&L'}</div><div class=${cls('num', sgn(i.net))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.money(i.net)}</div><div class="sub" title="Commission, swap and fees">${i.status === 'open' ? 'floating' : `after ${fmt.money(i.costs)} costs`}</div></div>`}
+      <div class="kcell"><div class="cap">Result</div><div class=${cls('num', sgn(focus.r))} style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(focus.r)}</div><div class="sub">${focus.name}</div></div>
+      <div class="kcell"><div class="cap" title=${pth && pth.peak ? 'Highest combined risk you held (stop moves counted)' : 'Sum of each position\'s first stop'}>${pth && pth.peak ? 'Risk (peak held)' : 'Initial risk'}</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${focus.risk != null ? fmt.plain(focus.risk) : '—'}</div>
+        ${(() => { const nb = openRiskNow(d); const v = nb && nb.get(focus.account_id); return nb && nb.has(focus.account_id) ? html`<div class="sub">now ${v === 0 ? html`<span class="pos">$0 (stop at entry)</span>` : v == null ? 'unknown' : fmt.plain(v)}</div>` : ''; })()}<div class="sub">${focus.risk == null ? 'no S/L seen' : leadCheck && leadCheck.limit ? html`<span style=${leadCheck.level === 'over' ? 'color:var(--neg)' : leadCheck.level === 'tolerance' ? 'color:var(--amber)' : ''}>limit ${fmt.plain(leadCheck.limit)}${leadCheck.level === 'tolerance' ? ' · within tolerance' : leadCheck.level === 'over' ? ' · over' : ''}</span>` : multi ? focus.name : 'lead account'}</div></div>
       ${pth && pth.mae_r != null && html`<div class="kcell"><div class="cap" title="Worst point of the combined floating P&L while the trade was open">Drawdown</div>
         <div class="num neg" style="font-size:17px;font-weight:600;margin-top:5px">${fmt.r(Math.min(0, pth.mae_r))}</div>
-        <div class="sub" title="Best point during the trade">best <span class=${sgn(pth.mfe_r)}>${fmt.r(pth.mfe_r)}</span>${i.accounts.length > 1 ? ` · ${i.lead_name}` : ''}</div></div>`}
+        <div class="sub" title="Best point during the trade">best <span class=${sgn(pth.mfe_r)}>${fmt.r(pth.mfe_r)}</span>${multi ? ` · ${focus.name}` : ''}</div></div>`}
       <div class="kcell"><div class="cap">Checklist</div><div class="num" style="font-size:17px;font-weight:600;margin-top:5px">${d.checklist.length ? done + ' / ' + d.checklist.length : '—'}</div><div class="sub">${!i.strategy_id ? 'no strategy' : d.checklist.length - done ? (d.checklist.length - done) + ' not ticked' : 'all ticked'}</div></div>
     </div>
     <div class="tabs" role="tablist">${TABS.map(([k, l]) => html`<button type="button" role="tab" class=${cls('tab', tab === k && 'on')} aria-selected=${tab === k} onClick=${() => pickTab(k)}>${l}${k === 'chart' && d.screenshots.length + d.links.length > 0 ? html` <span class="chip num" style="height:18px;padding:0 6px;font-size:11px">${d.screenshots.length + d.links.length}</span>` : ''}</button>`)}</div>
     <div class="scrolly tabbody" style="padding:14px 16px 16px">
-      ${leadAcc.risk == null && i.status === 'closed' && html`<div class="warn" style="margin-bottom:12px">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
+      ${focus.risk == null && i.status === 'closed' && html`<div class="warn" style="margin-bottom:12px">R can't be worked out: at least one position had no stop-loss when the connector first saw it.</div>`}
       ${tab === 'review' && html`<${Review} d=${d} reload=${reload}/>`}
       ${tab === 'pos' && html`<div class="stack" style="gap:18px">${risk && risk.checks.length > 0 && html`<${RiskChecks} risk=${risk} nowBy=${openRiskNow(d)}/>`}<${Positions} d=${d} reload=${reload}/><${Executions} i=${i}/><${Grouping} d=${d} reload=${reload}/></div>`}
       ${tab === 'chart' && html`<${Chart} d=${d} reload=${reload}/>`}
-      ${tab === 'path' && html`<${TradePath} d=${d}/>`}
+      ${tab === 'path' && html`<${TradePath} d=${d} focusId=${focus.account_id}/>`}
       ${tab === 'log' && html`<${Audit} items=${d.audit}/>`}
     </div>`;
 }
@@ -285,15 +291,16 @@ function PathChart({ i, lead, res }) {
 const fmtGap = (ms) => (ms < 60000 ? Math.round(ms / 1000) + ' s' : fmt.dur(ms));
 
 /** How the trade moved (in R of the risk held) and how the combined risk changed as stops moved. */
-function TradePath({ d }) {
+function TradePath({ d, focusId }) {
   const i = d.idea, list = d.tradePath || [];
   const [selId, setSel] = useState(null);
+  useEffect(() => setSel(null), [focusId]); // a new pick in the top-right menu wins over an earlier click here
   const lead = list.find((x) => x.lead) || list[0];
   if (!lead) return html`<div class="box stack" style="gap:6px"><b>Not recorded for this trade</b>
     <div class="sub">The drawdown, best point and stop moves come from connector 1.02 on ${i.lead_name}. Install it in MT5 (Accounts & sync → MT5 connector) and new trades will show their path here. Older trades keep using the first stop of each position.</div></div>`;
   // every account has its own worst / best point (its own positions, its own risk), so pick one
   const recorded = list.filter((x) => x.mae_r != null || x.mfe_r != null);
-  const cur = list.find((x) => x.account_id === selId) || lead;
+  const cur = list.find((x) => x.account_id === selId) || list.find((x) => x.account_id === focusId) || lead;
   const accOf = (x) => i.accounts.find((a) => a.account_id === x.account_id) || {};
   const curAcc = accOf(cur);
   const R = curAcc.risk;
@@ -301,7 +308,10 @@ function TradePath({ d }) {
   const after = (t) => (t && i.open_time ? fmtGap(t - i.open_time) + ' after entry' : '');
   const short = (n) => (n || '').length > 18 ? n.slice(0, 17) + '…' : n;
   const kept = (x, r) => (r > 0 && x.mfe_r > 0 ? Math.round(Math.min(1, r / x.mfe_r) * 100) + '%' : '—');
+  const picked = i.accounts.find((a) => a.account_id === focusId);
+  const missing = selId == null && picked && !list.some((x) => x.account_id === focusId);
   return html`<div class="stack" style="gap:16px">
+    ${missing && html`<div class="warn">The trade path wasn't recorded on <b>${picked.name}</b> (connector 1.02 wasn't running on it during this trade), so this shows ${cur.name}. Its result and risk are in the strip above.</div>`}
     <section class="card stack" style="gap:8px">
       <div class="spread" style="flex-wrap:wrap;gap:8px"><h2 class="h2">How the trade moved</h2>
         ${list.length > 1 && html`<div class="seg2" role="group" aria-label="Account" style="max-width:100%;overflow-x:auto">${list.map((x) => html`<button type="button" class=${cur.account_id === x.account_id ? 'on' : ''} aria-pressed=${cur.account_id === x.account_id} onClick=${() => setSel(x.account_id)} title=${x.name + (x.lead ? ' (lead)' : '')}>${short(x.name)}${x.lead ? ' · lead' : ''}</button>`)}</div>`}</div>
